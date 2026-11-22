@@ -343,6 +343,11 @@ namespace Monitoring.Infrastructure.Migrations
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
+                    b.Property<string>("ApplicationName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<string>("Host")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -357,7 +362,17 @@ namespace Monitoring.Infrastructure.Migrations
                     b.Property<DateTime>("StartedUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<DateTime?>("StoppedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("WorkerName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.HasKey("WorkerId");
+
+                    b.HasIndex("ApplicationName", "LastSeenUtc");
 
                     b.ToTable("WorkerHeartbeats", (string)null);
                 });

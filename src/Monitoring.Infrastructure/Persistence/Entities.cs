@@ -73,10 +73,17 @@ public class RunAttempt
 
 public class WorkerHeartbeat
 {
+    /// <summary>Unique per process instance (changes on every restart). Never use it as the application or worker name.</summary>
     public string WorkerId { get; set; } = "";
+    /// <summary>The application this worker belongs to (Worker:ApplicationName). Kept per instance, so history keeps its grouping.</summary>
+    public string ApplicationName { get; set; } = "";
+    /// <summary>Stable configured worker name (same across restarts of the same deployment).</summary>
+    public string WorkerName { get; set; } = "";
     public string Host { get; set; } = "";
     public DateTime StartedUtc { get; set; }
     public DateTime LastSeenUtc { get; set; }
+    /// <summary>Set when the worker stopped serving on purpose (graceful stop or lost leadership). A stopped instance is offline at once.</summary>
+    public DateTime? StoppedUtc { get; set; }
     public int RunningCount { get; set; }
 }
 

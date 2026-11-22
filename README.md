@@ -52,7 +52,7 @@ The initial database provider and authentication mechanism should be chosen duri
 
 ## Dashboard and API
 
-The dashboard shows overall health, due and running jobs, success/failure trends, recent runs, failure details, duration, and worker heartbeat. Job detail includes schedule, next run, last run, run history, attempts, and controls to enable/disable or run now. Server-side filters and pagination cover large histories. The API exposes definition and run queries, authorized administration commands, worker health/readiness, and structured error responses. Never expose secrets or raw sensitive payloads in logs or responses.
+The dashboard shows overall health, due and running jobs, success/failure trends, recent runs, failure details, duration, and worker heartbeat, and worker nodes grouped by application with their registered and running services. Job detail includes schedule, next run, last run, run history, attempts, and controls to enable/disable or run now. Server-side filters and pagination cover large histories. The API exposes definition and run queries, authorized administration commands, worker health/readiness, and structured error responses. Never expose secrets or raw sensitive payloads in logs or responses.
 
 ## Active/standby workers
 
@@ -94,6 +94,50 @@ The attempts that were running stay `Running` until their lease expires (`Worker
 **`LeaderMode=Disabled`.** Every node is active (the pre-election behaviour). Use it only if you deliberately want several active workers sharing the load; duplicate protection then rests on the claim and fencing layers alone. Both modes use the same code path, and the multi-worker tests (`MultiWorkerTests`, `AttemptAndRecoveryTests`) deliberately run in this mode.
 
 **Development note.** With `Worker:ApplyMigrationsOnStartup=true` and a database that does not exist yet, the first node creates it (migrations) so that there is a database to take the lock in; that is the only thing a node does before it is active. In production apply migrations as a controlled deployment step.
+
+## Worker nodes by application
+
+The Overview's **Worker nodes** panel groups nodes by application and shows what each node hosts. Three identifiers are kept apart:
+
+| Concept | Source | Changes on restart? | Example |
+| --- | --- | --- | --- |
+| **Application name** | `Worker:ApplicationName` (required) | no | `Billing` |
+| **Stable worker (node) name** | `Worker:WorkerId`, else the machine name | no | `billing-node` |
+| **Instance id** | stable name + random suffix | **yes**, every process start | `billing-node-1a2b3c4d` |
+
+All three are stored on the `WorkerHeartbeats` row of each instance, so an old instance keeps the application it belonged to. Two applications that happen to use the same node name are never merged.
+
+**What a "service" is.** A service is a registered job implementation (`AddJob<T>("key", ...)`). Each worker publishes its keys into `WorkerJobs` (one row per worker and key), which is also what job availability is derived from, so there is no second registry. Name and the enabled flag come from `JobDefinitions`. The worker's own loops (scheduler, heartbeat, runner, retention) are internal and not counted.
+
+**Registered vs running.** *Registered* = the node can execute the service (a `WorkerJobs` row), even while idle. *Running* = a run with status `Running` executes on that node right now. The dashboard therefore says `5 services registered · 1 running`, never "5 services running". Scheduled occurrences and historical runs are not services and are never counted. If two online nodes register the same service, the application's distinct count counts it once, while each node still shows its own registered count.
+
+### API
+
+`GET /api/v1/workers/applications` (same viewer policy as every Overview endpoint; four SQL queries whatever the number of workers):
+
+```json
+{ "generatedUtc": "...", "applications": [{
+    "applicationName": "Billing", "onlineNodes": 1, "registeredServices": 5, "runningServices": 1,
+    "nodes": [{ "workerId": "billing-node-1a2b3c4d", "workerName": "billing-node", "host": "HOST1", "state": "online",
+                "startedUtc": "...", "lastSeenUtc": "...", "ageSeconds": 3,
+                "registeredServiceCount": 5, "runningServices": 1, "runningRuns": 1,
+                "services": [{ "jobKey": "bill.invoice", "displayName": "Invoice run", "enabled": true, "runningCount": 1 }] }],
+    "previousInstances": [{ "workerId": "billing-node-9f8e7d6c", "workerName": "billing-node", "state": "offline", "lastSeenUtc": "...", "ageSeconds": 7200 }] }] }
+```
+
+- `state` uses the existing threshold `Api:WorkerStaleSeconds` (45 s): `online` within it, `stale` up to 4x, `offline` beyond. An instance that stopped on purpose (graceful stop or lost leadership; `WorkerHeartbeats.StoppedUtc`) is `offline` immediately, so a restart or failover does not show two "online" nodes for 45 seconds. Its heartbeat clears the marker if the same process becomes active again.
+- Services are listed **only for `online` nodes**. A stale node is shown with a warning and no services (its capabilities are not "currently available", exactly like job availability), and offline instances are listed under `previousInstances` (last 24 hours, collapsed in the UI, labelled as historical: restarts create new instances, they are not extra running workers).
+- `registeredServices` of an application is the number of distinct keys over its **online** nodes; `runningServices` the distinct keys with at least one running run. `runningRuns` counts runs (a job with `AllowParallel` can run twice).
+- Applications with online nodes sort first. `GET /api/v1/workers` is unchanged apart from the added `applicationName` and `workerName` fields.
+- The dashboard refreshes this panel through the existing SignalR path (`WorkersChanged` and `RunChanged` invalidate the `workers` queries); the polling fallback applies as before. Times follow the Local/UTC toggle.
+
+### Active/standby
+
+In `ActiveStandby` mode only the active node registers, so a **standby never appears** in this panel (and never executes anything); the panel states this. After a failover the old instance becomes a previous instance at once and the new leader's card appears. With `LeaderMode=Disabled` every node is active and every node appears.
+
+### Existing databases
+
+The `WorkerApplicationName` migration adds `ApplicationName`, `WorkerName` and `StoppedUtc` to `WorkerHeartbeats`. Rows that exist before the migration are backfilled with `ApplicationName = 'Unassigned'` and `WorkerName` = the instance id without its trailing `-xxxxxxxx` suffix. They are old instances and show as previous instances of the application `Unassigned`; new instances register with their configured application name. Worker rows older than 7 days are deleted by the worker at startup (existing behaviour).
 
 ## Data retention
 
@@ -402,7 +446,8 @@ Configuration keys (appsettings, user-secrets or environment variables with `__`
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ConnectionStrings:Monitoring` | none (required) | SQL Server connection string; startup fails with a clear message if missing |
-| `Worker:WorkerId` | host-pid | Optional readable name prefix (letters, digits, `.`, `_`, `-`, max 80); a random per-process suffix is always appended |
+| `Worker:ApplicationName` | `monitoring-local` | **Required.** The application this worker deployment serves; the dashboard groups nodes by it (letters, digits, `.`, `_`, `-`, max 80). Set it per deployment, e.g. `Billing`. See [Worker nodes by application](#worker-nodes-by-application) |
+| `Worker:WorkerId` | machine name | Optional readable name prefix (letters, digits, `.`, `_`, `-`, max 80); a random per-process suffix is always appended to form the instance id. The prefix (or the machine name) is also the stable node name shown in the dashboard |
 | `Worker:PollIntervalSeconds` / `LeaseSeconds` / `HeartbeatSeconds` | 2 / 60 / 15 | Poll cadence; run lease length (must be ≥ 2× heartbeat; also the window in which a worker counts as live); lease renewal and heartbeat period |
 | `Worker:MaxParallelism` / `SchedulerBatchSize` / `ShutdownGraceSeconds` | 4 / 50 / 30 | Concurrent runs per worker; schedules claimed per poll; wait for running jobs on shutdown |
 | `Worker:LeaderMode` | `ActiveStandby` | `ActiveStandby`: only the node holding the SQL leader lock schedules and executes, the rest are standbys. `Disabled`: every node is active (see [Active/standby](#activestandby-workers)) |

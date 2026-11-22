@@ -11,6 +11,6 @@ public static class WorkerCapacity
     public static IQueryable<string> LiveJobKeys(MonitoringDbContext db, DateTime liveSinceUtc) =>
         (from wj in db.WorkerJobs
          join w in db.Workers on wj.WorkerId equals w.WorkerId
-         where w.LastSeenUtc >= liveSinceUtc
+         where w.LastSeenUtc >= liveSinceUtc && w.StoppedUtc == null
          select wj.JobKey).Distinct();
 }

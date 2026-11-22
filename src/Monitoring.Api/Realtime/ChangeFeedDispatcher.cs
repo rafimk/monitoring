@@ -113,7 +113,7 @@ public sealed class ChangeFeedDispatcher(
         if (now < _nextWorkerCheckUtc) return false;
         _nextWorkerCheckUtc = now.AddSeconds(o.WorkerWatchSeconds);
 
-        var live = (await db.Workers.AsNoTracking().Where(w => w.LastSeenUtc >= now.AddSeconds(-o.WorkerStaleSeconds))
+        var live = (await db.Workers.AsNoTracking().Where(w => w.LastSeenUtc >= now.AddSeconds(-o.WorkerStaleSeconds) && w.StoppedUtc == null)
             .Select(w => w.WorkerId).ToListAsync(ct)).ToHashSet();
         var changed = _liveWorkers is not null && !_liveWorkers.SetEquals(live);
         _liveWorkers = live; // the first observation after start is a baseline, not a change

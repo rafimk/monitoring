@@ -172,3 +172,15 @@ See [README.md](README.md) for architecture and current development instructions
 - The first cleanup on a very large history was only tested at small scale; watch the transaction log on the first run.
 - No metric or alert on cleanup failure beyond logs.
 
+## Worker nodes grouped by application (22 November 2026)
+
+**Done** (details in [README.md](README.md#worker-nodes-by-application)): required `Worker:ApplicationName` persisted on every `WorkerHeartbeats` row next to the stable node name and the unique instance id (EF migration `WorkerApplicationName`; old rows backfilled as `Unassigned`). New `GET /api/v1/workers/applications` (four queries) reuses `WorkerJobs` as the service registry and returns, per application and node, registered services vs currently running services. The Overview panel groups by application, shows expandable node cards with the service list, keeps previous instances collapsed and labelled historical, and refreshes through SignalR. A stopped instance is marked `StoppedUtc` so restarts and failovers do not show two online nodes. Stale or offline nodes never report capabilities.
+
+**Registered vs running:** registered = a `WorkerJobs` row (can execute, even when idle); running = a `Running` run on that node. Distinct counts de-duplicate a service registered by several online nodes.
+
+**Still open:**
+
+- A standby node is not listed (it registers nothing by design); showing standby nodes would need a registration row with a role.
+- `ApplicationName` has a development default (`monitoring-local`); nothing forces production deployments to override it beyond documentation.
+- Previous instances are limited to the last 24 hours and 300 rows.
+

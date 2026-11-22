@@ -50,7 +50,7 @@ export class RealtimeClient {
     const c = this.conn;
 
     c.on("RunChanged", (m: { runId?: string | null; jobKey?: string | null } = {}) => {
-      this.queue(["runs"], ["summary"]);
+      this.queue(["runs"], ["summary"], ["workers"]); // running counts per node/service change with runs
       if (m.runId) this.queue(["run", m.runId]);
       if (m.jobKey) this.queue(["job", m.jobKey]);
       if (!m.jobKey) this.queue(["job"], ["run"]); // bulk notification: anything may have changed

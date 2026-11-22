@@ -160,3 +160,16 @@ tbody tr:hover { background: #19283c; }
   .topbar-actions { flex-basis: 100%; justify-content: flex-start; flex-wrap: wrap; gap: 10px 16px; margin: 2px 0 0; }
 }
 @media (max-width: 480px) { .topbar-inner nav { order: 3; width: 100%; } .topbar-actions { order: 2; } }
+.app-group { margin-top: 16px; } .app-group:first-of-type { margin-top: 10px; }
+.app-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 8px; }
+.app-head h3 { margin: 0; font-size: .95rem; overflow-wrap: anywhere; }
+.node-card { border: 1px solid var(--border); background: #152338; border-radius: 10px; list-style: none; }
+.node-head { all: unset; box-sizing: border-box; width: 100%; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px; cursor: pointer; border-radius: 10px; }
+.node-head:focus-visible { outline: 2px solid var(--accent, #6aa9ff); outline-offset: 2px; }
+.node-main { display: flex; align-items: center; gap: 9px; min-width: 0; } .node-main > span:last-child { display: grid; min-width: 0; }
+.node-caret { color: var(--muted); width: 1em; }
+.node-body { padding: 0 12px 12px; border-top: 1px solid var(--border); }
+.service-list { list-style: none; padding: 0; margin: 10px 0 0; display: grid; gap: 6px; }
+.service-item { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: #101b2a; }
+.service-item .worker-right, .node-head .worker-right { display: grid; justify-items: end; gap: 3px; }
+@media (max-width: 560px) { .node-head, .service-item { align-items: flex-start; } .worker-right { white-space: normal; } }

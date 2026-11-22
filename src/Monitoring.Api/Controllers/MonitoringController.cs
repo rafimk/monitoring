@@ -21,6 +21,58 @@ public class MonitoringController(MonitoringDbContext db, IOptions<ApiOptions> o
         return rows.Select(w => ToDto(w, now)).ToList();
     }
 
+    /// <summary>
+    /// Worker nodes grouped by application, with each online node's registered services (WorkerJobs) and what is running
+    /// right now. Four queries in total, whatever the number of workers.
+    /// </summary>
+    [HttpGet("workers/applications")]
+    public async Task<WorkerApplicationsDto> WorkerApplications(CancellationToken ct)
+    {
+        var now = DateTime.UtcNow;
+        var rows = await db.Workers.AsNoTracking().Where(w => w.LastSeenUtc >= now.AddHours(-24))
+            .OrderByDescending(w => w.LastSeenUtc).Take(300).ToListAsync(ct);
+        var dtos = rows.Select(w => (Row: w, Dto: ToDto(w, now))).ToList();
+        var onlineIds = dtos.Where(d => d.Dto.State == "online").Select(d => d.Row.WorkerId).ToList();
+
+        var caps = onlineIds.Count == 0 ? [] : await db.WorkerJobs.AsNoTracking().Where(c => onlineIds.Contains(c.WorkerId))
+            .Select(c => new { c.WorkerId, c.JobKey }).ToListAsync(ct);
+        var running = onlineIds.Count == 0 ? [] : await db.Runs.AsNoTracking()
+            .Where(r => r.Status == RunStatus.Running && r.WorkerId != null && onlineIds.Contains(r.WorkerId))
+            .GroupBy(r => new { WorkerId = r.WorkerId!, r.JobKey }).Select(g => new { g.Key.WorkerId, g.Key.JobKey, Count = g.Count() }).ToListAsync(ct);
+        var keys = caps.Select(c => c.JobKey).Concat(running.Select(r => r.JobKey)).Distinct().ToList();
+        var defs = keys.Count == 0 ? new Dictionary<string, (string Name, bool Enabled)>()
+            : (await db.Definitions.AsNoTracking().Where(d => keys.Contains(d.Key)).Select(d => new { d.Key, d.DisplayName, d.Enabled }).ToListAsync(ct))
+                .ToDictionary(d => d.Key, d => (Name: d.DisplayName, d.Enabled));
+
+        var capsByWorker = caps.ToLookup(c => c.WorkerId, c => c.JobKey);
+        var runningByWorker = running.ToLookup(r => r.WorkerId);
+
+        WorkerNodeDto Node(WorkerHeartbeat w, WorkerDto dto)
+        {
+            var counts = runningByWorker[w.WorkerId].ToDictionary(r => r.JobKey, r => r.Count);
+            var serviceKeys = capsByWorker[w.WorkerId].Union(counts.Keys).OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
+            var services = serviceKeys.Select(k => new NodeServiceDto(
+                k, defs.TryGetValue(k, out var d) ? d.Name : k, defs.TryGetValue(k, out var e) && e.Enabled, counts.GetValueOrDefault(k))).ToList();
+            return new WorkerNodeDto(w.WorkerId, w.WorkerName, w.Host, dto.State, w.StartedUtc, w.LastSeenUtc, dto.AgeSeconds,
+                services.Count, services.Count(s => s.RunningCount > 0), services.Sum(s => s.RunningCount), services);
+        }
+
+        var groups = dtos.GroupBy(d => d.Row.ApplicationName, StringComparer.Ordinal).Select(g =>
+        {
+            var nodes = g.Where(d => d.Dto.State != "offline").OrderBy(d => d.Row.WorkerName).ThenBy(d => d.Row.StartedUtc)
+                .Select(d => Node(d.Row, d.Dto)).ToList();
+            var online = nodes.Where(n => n.State == "online").ToList();
+            var previous = g.Where(d => d.Dto.State == "offline").OrderByDescending(d => d.Row.LastSeenUtc)
+                .Select(d => new PreviousInstanceDto(d.Row.WorkerId, d.Row.WorkerName, d.Row.Host, d.Dto.State, d.Row.LastSeenUtc, d.Dto.AgeSeconds)).ToList();
+            return new ApplicationGroupDto(g.Key, online.Count,
+                online.SelectMany(n => n.Services).Select(s => s.JobKey).Distinct().Count(),
+                online.SelectMany(n => n.Services).Where(s => s.RunningCount > 0).Select(s => s.JobKey).Distinct().Count(),
+                nodes, previous);
+        }).OrderByDescending(a => a.OnlineNodes > 0).ThenBy(a => a.ApplicationName, StringComparer.OrdinalIgnoreCase).ToList();
+
+        return new WorkerApplicationsDto(now, groups);
+    }
+
     [HttpGet("summary")]
     public async Task<SummaryDto> Summary(CancellationToken ct)
     {
@@ -73,7 +125,7 @@ public class MonitoringController(MonitoringDbContext db, IOptions<ApiOptions> o
     {
         var age = (int)Math.Max(0, (now - w.LastSeenUtc).TotalSeconds);
         var stale = options.Value.WorkerStaleSeconds;
-        var state = age <= stale ? "online" : age <= stale * 4 ? "stale" : "offline";
-        return new WorkerDto(w.WorkerId, w.Host, w.StartedUtc, w.LastSeenUtc, w.RunningCount, age, state);
+        var state = w.StoppedUtc != null ? "offline" : age <= stale ? "online" : age <= stale * 4 ? "stale" : "offline";
+        return new WorkerDto(w.WorkerId, w.Host, w.StartedUtc, w.LastSeenUtc, w.RunningCount, age, state, w.ApplicationName, w.WorkerName);
     }
 }
