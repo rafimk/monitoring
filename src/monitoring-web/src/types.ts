@@ -29,7 +29,20 @@ export interface Attempt { attempt: number; status: RunStatus; startedUtc: strin
 export interface RunDetail { run: Run; attempts: Attempt[] }
 export interface Paged<T> { items: T[]; total: number; page: number; pageSize: number }
 
-export interface Worker { workerId: string; host: string; startedUtc: string; lastSeenUtc: string; runningCount: number; ageSeconds: number; state: "online" | "stale" | "offline" }
+export interface Worker { workerId: string; host: string; startedUtc: string; lastSeenUtc: string; runningCount: number; ageSeconds: number; state: "online" | "stale" | "offline"; applicationName: string; workerName: string }
+
+/** A registered service (job implementation) on one node. runningCount = runs executing right now. */
+export interface NodeService { jobKey: string; displayName: string; enabled: boolean; runningCount: number }
+export interface WorkerNode {
+  workerId: string; workerName: string; host: string; state: "online" | "stale" | "offline"; startedUtc: string; lastSeenUtc: string; ageSeconds: number;
+  registeredServiceCount: number; runningServices: number; runningRuns: number; services: NodeService[];
+}
+export interface PreviousInstance { workerId: string; workerName: string; host: string; state: string; lastSeenUtc: string; ageSeconds: number }
+export interface ApplicationGroup {
+  applicationName: string; onlineNodes: number; registeredServices: number; runningServices: number;
+  nodes: WorkerNode[]; previousInstances: PreviousInstance[];
+}
+export interface WorkerApplications { generatedUtc: string; applications: ApplicationGroup[] }
 
 export interface Summary {
   totalJobs: number; enabledJobs: number; unavailableJobs: number; running: number; queued: number; overdue: number;

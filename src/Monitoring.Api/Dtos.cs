@@ -31,7 +31,27 @@ public sealed record AttemptDto(int Attempt, RunStatus Status, DateTime StartedU
 
 public sealed record RunDetailDto(RunDto Run, IReadOnlyList<AttemptDto> Attempts);
 
-public sealed record WorkerDto(string WorkerId, string Host, DateTime StartedUtc, DateTime LastSeenUtc, int RunningCount, int AgeSeconds, string State);
+public sealed record WorkerDto(string WorkerId, string Host, DateTime StartedUtc, DateTime LastSeenUtc, int RunningCount, int AgeSeconds, string State,
+    string ApplicationName, string WorkerName);
+
+/// <summary>A registered service (job implementation) on one node. RunningCount is runs executing right now.</summary>
+public sealed record NodeServiceDto(string JobKey, string DisplayName, bool Enabled, int RunningCount);
+
+/// <summary>
+/// One worker process instance. Services are only reported for nodes that are online (fresh heartbeat); a stale node's
+/// capabilities are not "currently available". RegisteredServiceCount != RunningServices: most registered services idle.
+/// </summary>
+public sealed record WorkerNodeDto(
+    string WorkerId, string WorkerName, string Host, string State, DateTime StartedUtc, DateTime LastSeenUtc, int AgeSeconds,
+    int RegisteredServiceCount, int RunningServices, int RunningRuns, IReadOnlyList<NodeServiceDto> Services);
+
+public sealed record PreviousInstanceDto(string WorkerId, string WorkerName, string Host, string State, DateTime LastSeenUtc, int AgeSeconds);
+
+public sealed record ApplicationGroupDto(
+    string ApplicationName, int OnlineNodes, int RegisteredServices, int RunningServices,
+    IReadOnlyList<WorkerNodeDto> Nodes, IReadOnlyList<PreviousInstanceDto> PreviousInstances);
+
+public sealed record WorkerApplicationsDto(DateTime GeneratedUtc, IReadOnlyList<ApplicationGroupDto> Applications);
 
 public sealed record TrendPointDto(DateTime HourUtc, int Succeeded, int Failed);
 

@@ -22,6 +22,7 @@ public class ApiTests(ApiFixture fx)
     [InlineData("/api/v1/runs")]
     [InlineData("/api/v1/summary")]
     [InlineData("/api/v1/workers")]
+    [InlineData("/api/v1/workers/applications")]
     public async Task Anonymous_IsRejected(string url)
     {
         var c = await fx.ClientAsync(null);
@@ -37,6 +38,20 @@ public class ApiTests(ApiFixture fx)
         var c = await fx.ClientAsync(role);
         Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/api/v1/jobs")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/api/v1/summary")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await c.GetAsync("/api/v1/workers/applications")).StatusCode);   // same policy as the Overview data
+    }
+
+    [Fact]
+    public async Task WorkerApplications_ReturnsTheGroupedShape()
+    {
+        var c = await fx.ClientAsync("viewer");
+        var body = await c.GetFromJsonAsync<JsonElement>("/api/v1/workers/applications", Json);
+        var groups = body.GetProperty("applications");
+        Assert.True(body.TryGetProperty("generatedUtc", out _));
+        Assert.True(groups.GetArrayLength() >= 1);
+        var first = groups[0];
+        foreach (var field in new[] { "applicationName", "onlineNodes", "registeredServices", "runningServices", "nodes", "previousInstances" })
+            Assert.True(first.TryGetProperty(field, out _), field);
     }
 
     [Fact]

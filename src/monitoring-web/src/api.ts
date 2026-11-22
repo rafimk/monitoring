@@ -1,4 +1,4 @@
-import type { Attempt, JobDetail, JobSummary, Paged, Run, RunDetail, RunFilters, Summary, Worker } from "./types";
+import type { Attempt, JobDetail, JobSummary, Paged, Run, RunDetail, RunFilters, Summary, Worker, WorkerApplications } from "./types";
 
 import { config } from "./config";
 export const API_BASE: string = config.apiBaseUrl;
@@ -46,6 +46,7 @@ const qs = (o: Record<string, string | number | undefined>) => {
 export const api = {
   summary: () => request<Summary>("/api/v1/summary"),
   workers: () => request<Worker[]>("/api/v1/workers"),
+  workerApplications: () => request<WorkerApplications>("/api/v1/workers/applications"),
   jobs: () => request<JobSummary[]>("/api/v1/jobs"),
   job: (key: string) => request<JobDetail>(`/api/v1/jobs/${encodeURIComponent(key)}`),
   runs: (f: RunFilters) => request<Paged<Run>>(`/api/v1/runs?${qs({ ...f })}`),

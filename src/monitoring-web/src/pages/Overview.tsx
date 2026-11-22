@@ -4,7 +4,8 @@ import { api } from "../api";
 import { Card, Empty, ErrorBox, Loading, StatusBadge, Time } from "../components";
 import { useFallbackPoll } from "../realtime/RealtimeProvider";
 import { formatDuration } from "../format";
-import type { Summary, Worker } from "../types";
+import { WorkerApplicationsPanel } from "./WorkerApplications";
+import type { Summary } from "../types";
 
 function Trend({ data }: { data: Summary["trend"] }) {
   const max = Math.max(1, ...data.map((d) => d.succeeded + d.failed));
@@ -36,25 +37,10 @@ function Trend({ data }: { data: Summary["trend"] }) {
   );
 }
 
-function WorkerPanel({ workers }: { workers: Worker[] }) {
-  const active = workers.filter((w) => w.state !== "offline");
-  const previous = workers.filter((w) => w.state === "offline");
-  return <section className="panel" aria-labelledby="worker-heading">
-    <div className="section-head"><div><h2 id="worker-heading">Worker nodes</h2><p className="panel-subtitle">Current capacity and heartbeat status</p></div><span className="badge info">{active.length} active</span></div>
-    {active.length === 0 ? <Empty>No active workers are reporting.</Empty> : <ul className="worker-list">{active.map((w) => <li className="worker-item" key={w.workerId}>
-      <div><div className="worker-id">{w.host}</div><div className="worker-detail mono">{w.workerId}</div></div>
-      <div className="worker-right"><span className={`badge ${w.state === "online" ? "ok" : "warn"}`}>{w.state}</span><div className="worker-detail">{w.ageSeconds}s ago · {w.runningCount} running</div></div>
-    </li>)}</ul>}
-    {previous.length > 0 && <details className="worker-archive"><summary>{previous.length} previous worker instance{previous.length === 1 ? "" : "s"}</summary>
-      <div className="table-wrap"><table><thead><tr><th>Worker</th><th>Last seen</th></tr></thead><tbody>{previous.map((w) => <tr key={w.workerId}><td data-label="Worker" className="mono">{w.workerId}</td><td data-label="Last seen">{Math.round(w.ageSeconds / 60)}m ago</td></tr>)}</tbody></table></div>
-    </details>}
-  </section>;
-}
-
 export default function Overview() {
   const poll = useFallbackPoll();
   const summary = useQuery({ queryKey: ["summary"], queryFn: api.summary, refetchInterval: poll });
-  const workers = useQuery({ queryKey: ["workers"], queryFn: api.workers, refetchInterval: poll });
+  const workers = useQuery({ queryKey: ["workers", "applications"], queryFn: api.workerApplications, refetchInterval: poll });
   const failures = useQuery({ queryKey: ["runs", "recent-failures"], queryFn: () => api.runs({ status: "Failed", page: 1, pageSize: 5 }), refetchInterval: poll });
 
   if (summary.isLoading) return <Loading what="overview" />;
@@ -80,7 +66,7 @@ export default function Overview() {
 
     <div className="overview-grid">
       <section className="panel" aria-labelledby="trend-heading"><div className="section-head"><div><h2 id="trend-heading">Execution activity</h2><p className="panel-subtitle">Hourly outcomes over the last 24 hours</p></div><Link to="/runs">View runs →</Link></div><Trend data={s.trend} /></section>
-      {workers.isLoading ? <section className="panel"><Loading what="workers" /></section> : workers.isError ? <section className="panel"><ErrorBox error={workers.error} retry={() => workers.refetch()} /></section> : <WorkerPanel workers={workers.data!} />}
+      {workers.isLoading ? <section className="panel"><Loading what="workers" /></section> : workers.isError ? <section className="panel"><ErrorBox error={workers.error} retry={() => workers.refetch()} /></section> : <WorkerApplicationsPanel data={workers.data!} />}
     </div>
 
     <section aria-labelledby="failures-heading"><div className="section-head"><div><h2 id="failures-heading">Recent failures</h2><p className="panel-subtitle">The latest jobs that need attention</p></div><Link to="/runs?status=Failed">View all →</Link></div>

@@ -15,6 +15,14 @@ public sealed class WorkerOptions
     /// </summary>
     public string? WorkerId { get; set; }
 
+    /// <summary>
+    /// The application this worker deployment serves (required). Dashboard nodes are grouped by it. It is distinct from
+    /// <see cref="WorkerId"/> (stable node name) and from the per-process instance id. The default is a local-development
+    /// placeholder: set it per deployment (for example "Billing").
+    /// </summary>
+    public string ApplicationName { get; set; } = DefaultApplicationName;
+    public const string DefaultApplicationName = "monitoring-local";
+
     [Range(1, 300)] public int PollIntervalSeconds { get; set; } = 2;
     [Range(5, 3600)] public int LeaseSeconds { get; set; } = 60;
     [Range(1, 600)] public int HeartbeatSeconds { get; set; } = 15;
@@ -64,6 +72,8 @@ public sealed partial class WorkerOptionsValidator : IValidateOptions<WorkerOpti
             return ValidateOptionsResult.Fail("Worker:LeaseSeconds must be at least twice Worker:HeartbeatSeconds.");
         if (!string.IsNullOrWhiteSpace(o.WorkerId) && !NamePattern().IsMatch(o.WorkerId))
             return ValidateOptionsResult.Fail("Worker:WorkerId may only contain letters, digits, '.', '_' and '-' (max 80 characters).");
+        if (string.IsNullOrWhiteSpace(o.ApplicationName) || !NamePattern().IsMatch(o.ApplicationName.Trim()))
+            return ValidateOptionsResult.Fail("Worker:ApplicationName is required: letters, digits, '.', '_' and '-' (max 80 characters).");
         if (!Enum.IsDefined(o.LeaderMode))
             return ValidateOptionsResult.Fail("Worker:LeaderMode must be ActiveStandby or Disabled.");
         if (string.IsNullOrWhiteSpace(o.LeaderLockResource) || o.LeaderLockResource.Length > 255)
@@ -100,6 +110,16 @@ public sealed class WorkerIdentity(IOptions<WorkerOptions> options)
     /// <summary>"{name}-{random}" — unique per process even when the configured name is shared.</summary>
     public string Id { get; } = Build(options.Value.WorkerId);
     public DateTime StartedUtc { get; } = DateTime.UtcNow;
+    /// <summary>Application this node belongs to (Worker:ApplicationName).</summary>
+    public string ApplicationName { get; } = options.Value.ApplicationName.Trim();
+    /// <summary>Stable node name: the configured Worker:WorkerId, else the machine name. Same across restarts.</summary>
+    public string Name { get; } = StableName(options.Value.WorkerId);
+
+    private static string StableName(string? configured)
+    {
+        var name = string.IsNullOrWhiteSpace(configured) ? Environment.MachineName : configured.Trim();
+        return name.Length > 80 ? name[..80] : name;
+    }
 
     private static string Build(string? configured)
     {

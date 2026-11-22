@@ -32,6 +32,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
         using var scope = Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<MonitoringDbContext>();
         await db.Database.EnsureDeletedAsync();
+        await CreateDatabaseAsync();   // CREATE DATABASE can be slow while many throwaway worker-test databases are being created in parallel
         await db.Database.MigrateAsync();
 
         var now = DateTime.UtcNow;
@@ -55,6 +56,19 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
             });
         }
         await db.SaveChangesAsync();
+    }
+
+    private static async Task CreateDatabaseAsync()
+    {
+        var builder = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(ConnectionString);
+        var name = builder.InitialCatalog;
+        builder.InitialCatalog = "master";
+        await using var connection = new Microsoft.Data.SqlClient.SqlConnection(builder.ConnectionString);
+        await connection.OpenAsync();
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandTimeout = 300;
+        cmd.CommandText = $"IF DB_ID(N'{name.Replace("'", "''")}') IS NULL CREATE DATABASE [{name.Replace("]", "]]")}]";
+        await cmd.ExecuteNonQueryAsync();
     }
 
     Task IAsyncLifetime.DisposeAsync() => Task.CompletedTask;

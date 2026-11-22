@@ -175,7 +175,7 @@ public sealed class WorkerCoordinator(
 
             Interlocked.Increment(ref _activations);
             _role = WorkerRole.Active;
-            log.LogInformation("Worker {WorkerId} is ACTIVE{Session}", identity.Id,
+            log.LogInformation("Worker {WorkerId} (application {Application}) is ACTIVE{Session}", identity.Id, identity.ApplicationName,
                 lease is null ? " (leader election disabled)" : $" (leader lock '{o.LeaderLockResource}' held by SQL session {lease.SessionId})");
 
             if (lease is null)
@@ -205,9 +205,23 @@ public sealed class WorkerCoordinator(
         {
             _role = clean ? WorkerRole.Stopping : WorkerRole.Standby;
             await StopLoopsAsync(started, lost: tenure.IsLost);
+            await MarkStoppedAsync();
             // The lock is released by the caller only after everything above has stopped, so a successor never starts
             // while this node's graceful shutdown (re-queueing of running jobs) is still in progress.
         }
+    }
+
+    /// <summary>Best effort: a database outage here must not block shutdown or the hand-over to a standby.</summary>
+    private async Task MarkStoppedAsync()
+    {
+        try
+        {
+            using var scope = services.CreateScope();
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await services.GetRequiredService<WorkerRegistrar>()
+                .MarkStoppedAsync(scope.ServiceProvider.GetRequiredService<MonitoringDbContext>(), cts.Token);
+        }
+        catch (Exception ex) { log.LogDebug(ex, "Could not mark worker {WorkerId} as stopped", identity.Id); }
     }
 
     private async Task<(bool, string?)> VerifySafelyAsync(LeaderLock lease, TimeSpan timeout, CancellationToken stop)

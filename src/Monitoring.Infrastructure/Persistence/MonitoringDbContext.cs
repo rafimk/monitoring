@@ -90,6 +90,9 @@ public class MonitoringDbContext(DbContextOptions<MonitoringDbContext> options) 
             e.HasKey(x => x.WorkerId);
             e.Property(x => x.WorkerId).HasMaxLength(100);
             e.Property(x => x.Host).HasMaxLength(200);
+            e.Property(x => x.ApplicationName).HasMaxLength(100);
+            e.Property(x => x.WorkerName).HasMaxLength(100);
+            e.HasIndex(x => new { x.ApplicationName, x.LastSeenUtc });
         });
 
         b.Entity<WorkerJob>(e =>
