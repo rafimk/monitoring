@@ -2,7 +2,7 @@ import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { ErrorBox, Loading } from "../components";
-import { POLL_MS } from "../config";
+import { useFallbackPoll } from "../realtime/RealtimeProvider";
 import type { RunStatus, TriggerSource } from "../types";
 import { Pager, RunsTable, STATUSES } from "./RunsTable";
 
@@ -13,12 +13,13 @@ export default function Runs() {
   const trigger = (params.get("trigger") ?? "") as TriggerSource | "";
   const page = Math.max(1, Number(params.get("page") ?? 1) || 1);
 
+  const poll = useFallbackPoll();
   const jobs = useQuery({ queryKey: ["jobs"], queryFn: api.jobs });
   const q = useQuery({
     queryKey: ["runs", { jobKey, status, trigger, page }],
     queryFn: () => api.runs({ jobKey, status, trigger, page, pageSize: 25 }),
     placeholderData: keepPreviousData,
-    refetchInterval: POLL_MS,
+    refetchInterval: poll,
   });
 
   const set = (k: string, v: string) => {

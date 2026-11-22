@@ -1,52 +1,123 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { configureApi } from "./api";
-import type { Role } from "./types";
+import { createKeycloakBackend, type AuthBackend } from "./auth/backend";
+import { sessionFromClaims, type Session } from "./auth/session";
+import { config } from "./config";
 
-const STORAGE_KEY = "monitoring.token";
+export { hasRole } from "./auth/session";
+export type { Session } from "./auth/session";
 
-export interface Session { token: string; name: string; role: Role }
+export type AuthStatus =
+  | "loading"          // restoring a session (silent SSO)
+  | "authenticated"
+  | "unauthenticated"  // nobody signed in
+  | "expired"          // had a session; it can no longer be refreshed
+  | "forbidden"        // signed in, but the account has no monitoring role
+  | "error";           // sign-in service unreachable or misconfigured
 
-/** Decodes the JWT payload for UI display/gating only. The API re-checks every permission server-side. */
-export function parseToken(token: string): Session | null {
-  try {
-    const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-    const role = payload.role as Role;
-    if (!["viewer", "operator", "administrator"].includes(role)) return null;
-    if (payload.exp && payload.exp * 1000 < Date.now()) return null;
-    return { token, name: payload.name ?? "user", role };
-  } catch {
-    return null;
-  }
+interface AuthCtx {
+  status: AuthStatus;
+  session: Session | null;
+  error: string | null;
+  login: () => void;
+  logout: () => void;
+  retry: () => void;
+  /** Development builds only (undefined in production). */
+  devLogin?: (username: string, role: string) => Promise<void>;
+  getToken: () => Promise<string | null>;
 }
-
-const rank: Record<Role, number> = { viewer: 0, operator: 1, administrator: 2 };
-export const hasRole = (s: Session | null, min: Role) => !!s && rank[s.role] >= rank[min];
-
-interface AuthCtx { session: Session | null; login: (token: string) => boolean; logout: () => void }
 const Ctx = createContext<AuthCtx | null>(null);
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(() => {
-    const t = sessionStorage.getItem(STORAGE_KEY);
-    return t ? parseToken(t) : null;
-  });
+function defaultBackend(): AuthBackend | null {
+  return config.keycloak ? createKeycloakBackend(config.keycloak) : null;
+}
 
-  const logout = useCallback(() => { sessionStorage.removeItem(STORAGE_KEY); setSession(null); }, []);
-  const login = useCallback((token: string) => {
-    const s = parseToken(token.trim());
-    if (!s) return false;
-    sessionStorage.setItem(STORAGE_KEY, s.token);
-    setSession(s);
-    return true;
+export function AuthProvider({ children, backend: injected }: { children: ReactNode; backend?: AuthBackend | null }) {
+  const qc = useQueryClient();
+  const backendRef = useRef<AuthBackend | null | undefined>(undefined);
+  if (backendRef.current === undefined) backendRef.current = injected !== undefined ? injected : defaultBackend();
+  const initRef = useRef<Promise<{ authenticated: boolean }> | null>(null);
+
+  const [status, setStatus] = useState<AuthStatus>("loading");
+  const [session, setSession] = useState<Session | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const adopt = useCallback((b: AuthBackend) => {
+    const s = sessionFromClaims(b.claims() ?? {}, config.roles);
+    if (!s) { setSession(null); setStatus("forbidden"); return; }
+    setSession(s); setError(null); setStatus("authenticated");
   }, []);
 
-  useEffect(() => {
-    configureApi({ getToken: () => session?.token ?? null, onUnauthorized: logout });
-  }, [session, logout]);
-  // Configure synchronously for the first render's queries too.
-  configureApi({ getToken: () => session?.token ?? null, onUnauthorized: logout });
+  const expire = useCallback(() => {
+    qc.clear();
+    setSession(null);
+    setStatus((s) => (s === "authenticated" ? "expired" : s));
+  }, [qc]);
 
-  const value = useMemo(() => ({ session, login, logout }), [session, login, logout]);
+  const start = useCallback(() => {
+    const b = backendRef.current;
+    if (!b) {
+      setStatus(import.meta.env.DEV && config.devLogin ? "unauthenticated" : "error");
+      setError(import.meta.env.DEV && config.devLogin ? null
+        : "Sign-in is not configured. Set VITE_KEYCLOAK_URL, VITE_KEYCLOAK_REALM and VITE_KEYCLOAK_CLIENT_ID.");
+      return;
+    }
+    setStatus("loading");
+    b.onSessionExpired(expire);
+    // keycloak-js may be initialised only once per instance; React StrictMode runs effects twice in development.
+    (initRef.current ??= b.init()).then(
+      (r) => { if (r.authenticated) adopt(b); else setStatus("unauthenticated"); },
+      () => {
+        initRef.current = null;
+        setError("The sign-in service (Keycloak) cannot be reached. Check your connection or try again in a moment.");
+        setStatus("error");
+      },
+    );
+  }, [adopt, expire]);
+
+  useEffect(start, [start]);
+
+  const getToken = useCallback(async () => (await backendRef.current?.getToken()) ?? null, []);
+  // Configure synchronously so the very first queries already use the token provider.
+  configureApi({ getToken, onUnauthorized: expire });
+
+  const login = useCallback(() => {
+    backendRef.current?.login().catch(() => {
+      setError("The sign-in service (Keycloak) cannot be reached. Check your connection or try again in a moment.");
+      setStatus("error");
+    });
+  }, []);
+
+  const logout = useCallback(() => {
+    const b = backendRef.current;
+    qc.clear();
+    setSession(null);
+    setStatus("unauthenticated");
+    void b?.logout();
+  }, [qc]);
+
+  const retry = useCallback(() => {
+    initRef.current = null;
+    // A failed keycloak-js init cannot be repeated on the same instance: rebuild the page state cleanly.
+    if (injected === undefined && config.keycloak) window.location.reload(); else start();
+  }, [injected, start]);
+
+  const devLogin = useMemo(() => {
+    if (!(import.meta.env.DEV && config.devLogin)) return undefined;
+    return async (username: string, role: string) => {
+      const { createDevBackend } = await import("./auth/devBackend");
+      const dev = createDevBackend();
+      await dev.signIn(username, role);
+      backendRef.current = dev;
+      adopt(dev);
+    };
+  }, [adopt]);
+
+  const value = useMemo<AuthCtx>(
+    () => ({ status, session, error, login, logout, retry, devLogin, getToken }),
+    [status, session, error, login, logout, retry, devLogin, getToken],
+  );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

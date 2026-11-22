@@ -130,3 +130,45 @@ The current solution implements the separate worker, SQL Server interval schedul
 - Ensure each deployment has a unique worker identity; a manually configured shared `WorkerId` can let one instance renew or complete another instance's run.
 
 See [README.md](README.md) for architecture and current development instructions. The platform exists and runs, but the external publisher and release phase remain to be implemented.
+
+## Keycloak authentication and live updates (22 November 2026)
+
+**Done** (details in [README.md](README.md#authentication-keycloak)):
+
+- Keycloak sign-in for the React dashboard (Authorization Code + PKCE, public client, in-memory tokens, shared-promise refresh, silent SSO on page refresh, visible failure/expiry/no-access states, dev sign-in compiled out of production builds).
+- API validates Keycloak access tokens (issuer, signing keys, audience, expiry), maps realm or client roles explicitly to viewer/operator/administrator, rejects users without a monitoring role, keeps all endpoint permissions, allows dev tokens only in Development when explicitly enabled, and refuses to start in production without valid Keycloak settings.
+- SignalR hub `/hubs/monitoring` (viewer-authorized, origin-restricted, query token only on the hub path) fed by a transactional outbox (`ChangeEvents`) written by the worker and API; API-hosted leader-only dispatcher with coalescing, replay after restart, worker-liveness diffing and retention cleanup. The worker never calls the API.
+- React: one connection per session, fresh token per (re)connect, backoff, refetch on connect, query invalidation, 30 s polling only while disconnected.
+- Local Keycloak realm (`docker compose --profile keycloak`), `scripts/verify-keycloak.mjs`.
+
+**Still open:**
+
+- Verify in a real browser: PKCE redirect, silent SSO, token refresh, logout against a real Keycloak (only unit-tested and API-side verified so far).
+- Verify hub WebSockets through the real IIS / reverse proxy and that query strings are excluded from its logs.
+- SignalR backplane (Redis / Azure SignalR) if more than one API instance must serve live updates.
+- Token revocation on logout (back-channel logout or introspection) if 5-minute access tokens are not acceptable.
+- External application publisher library (separate follow-up, not started).
+
+## Active/standby worker mode (22 November 2026)
+
+**Done** (details in [README.md](README.md#activestandby-workers)): optional (default on) leader election with one SQL Server `sp_getapplock` session lock on a dedicated non-pooled connection. A standby registers, schedules, recovers and executes nothing; the active node proves ownership every `Worker:LeaderCheckSeconds` and fails closed (cancels jobs, stops renewing leases, discards results) when it cannot; graceful stop releases the lock after the runner has stopped; crash or lost session hands over to a standby with back-off and no restart loop. Per-run claim and attempt fencing stay as the second layer. Windows Service deployment and failover steps are documented.
+
+**Still open:**
+
+- Failover is availability, not exactly-once; a job ignoring cancellation can overlap with its retry. No fencing token reaches job code.
+- The dashboard does not show standby nodes (they register nothing by design); an explicit node/role view would need a schema change.
+- No automatic fail-back to a preferred node; no multi-node load sharing in `ActiveStandby` mode.
+- Failover timing was measured on a local Docker SQL Server only (about 5 s after a hard kill); verify on the real network and a Windows Service host, including the service recovery actions.
+- The development bootstrap (create the database when `ApplyMigrationsOnStartup=true`) is not covered by an automated test.
+
+## Nightly data retention (22 November 2026)
+
+**Done** (details in [README.md](README.md#data-retention)): versioned stored procedure `dbo.usp_Monitoring_ApplyRetention_v1` (EF migration `RetentionProcedure`) with separate policies: job history 30 days (terminal runs by `EndedUtc`, attempts with them), audit entries 365 days, dispatched change-feed events 7 days. Queued/Running runs, pending change events, schedules, definitions, workers and capabilities are never deleted. Batched short transactions, counts per entity returned, idempotent. `RetentionService` runs only inside the active worker's tenure, re-proves leadership before every batch, takes its own `monitoring-retention` app lock, persists the last success in `MaintenanceState`, runs one catch-up after downtime, retries with backoff and cannot affect job execution. The schedule is computed in the worker from `RunAt` and `TimeZoneId` (DST rules documented). The old 5-minute change-feed purges in the worker and API (which deleted undispatched rows after 24 h) were removed.
+
+**Still open:**
+
+- Heartbeat rows of long-dead workers are not cleaned (by design, pending a policy).
+- A manual procedure call does not record itself in `MaintenanceState`.
+- The first cleanup on a very large history was only tested at small scale; watch the transaction log on the first run.
+- No metric or alert on cleanup failure beyond logs.
+

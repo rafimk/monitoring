@@ -1,8 +1,7 @@
-using System.Text;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
+using Microsoft.AspNetCore.Builder;
 using Monitoring.Api;
+using Monitoring.Api.Auth;
+using Monitoring.Api.Realtime;
 using Monitoring.Infrastructure;
 using Monitoring.Infrastructure.Persistence;
 
@@ -14,27 +13,21 @@ builder.Services.AddOptions<ApiOptions>()
     .ValidateOnStart();
 var api = builder.Configuration.GetSection(ApiOptions.Section).Get<ApiOptions>() ?? new ApiOptions();
 
-if (string.IsNullOrWhiteSpace(api.JwtKey) || api.JwtKey.Length < 32)
-    throw new InvalidOperationException("Api:JwtKey must be configured with at least 32 characters (use user-secrets or environment variables).");
-if (api.EnableDevTokens && !builder.Environment.IsDevelopment())
-    throw new InvalidOperationException("Api:EnableDevTokens may only be enabled in the Development environment.");
+builder.Services.AddOptions<KeycloakOptions>()
+    .Bind(builder.Configuration.GetSection(KeycloakOptions.Section))
+    .ValidateDataAnnotations()
+    .ValidateOnStart();
+var keycloak = builder.Configuration.GetSection(KeycloakOptions.Section).Get<KeycloakOptions>() ?? new KeycloakOptions();
+// Production must use Keycloak; the locally signed dev token is Development-only and must be explicitly enabled.
+AuthenticationSetup.Validate(api, keycloak, builder.Environment.IsDevelopment());
 
 builder.Services.AddMonitoringPersistence(builder.Configuration);
+builder.Services.AddMonitoringAuthentication(api, keycloak);
 
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(o =>
-    {
-        o.MapInboundClaims = false; // keep short claim names ("role", "name") exactly as issued
-        o.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true, ValidIssuer = api.JwtIssuer,
-            ValidateAudience = true, ValidAudience = api.JwtAudience,
-            ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(api.JwtKey)),
-            ValidateLifetime = true, ClockSkew = TimeSpan.FromSeconds(30),
-            RoleClaimType = "role", NameClaimType = "name",
-        };
-    });
+builder.Services.AddSignalR(o => o.EnableDetailedErrors = false);
+builder.Services.AddSingleton<DispatcherLeadership>();
+builder.Services.AddSingleton<ChangeFeedDispatcher>(); // resolvable so tests can drive single polls deterministically
+if (api.ChangeFeedEnabled) builder.Services.AddHostedService(sp => sp.GetRequiredService<ChangeFeedDispatcher>());
 builder.Services.AddAuthorization(o =>
 {
     o.AddPolicy(Policies.Viewer, p => p.RequireRole(Roles.Viewer, Roles.Operator, Roles.Administrator));
@@ -73,10 +66,18 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors();
+// Browser WebSocket upgrades are only accepted from the configured dashboard origins.
+var webSockets = new WebSocketOptions();
+foreach (var origin in api.AllowedOrigins) webSockets.AllowedOrigins.Add(origin);
+app.UseWebSockets(webSockets);
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<MonitoringHub>(HubPaths.Monitoring, o =>
+{
+    o.CloseOnAuthenticationExpiration = true; // a connection ends when its token expires; the client reconnects with a fresh one
+}).RequireAuthorization(Policies.Viewer);
 app.MapHealthChecks("/health/live", new() { Predicate = _ => false });
 app.MapHealthChecks("/health/ready", new() { Predicate = r => r.Tags.Contains("ready") });
 

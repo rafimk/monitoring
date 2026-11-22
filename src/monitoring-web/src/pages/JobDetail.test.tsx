@@ -1,14 +1,8 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { AuthProvider } from "../auth";
+import { Route, Routes } from "react-router-dom";
+import { fakeBackend, realmClaims, renderWithAuth, RequireAuth } from "../test-utils";
 import JobDetail from "./JobDetail";
-
-function jwt(role: string) {
-  const b64 = (o: object) => btoa(JSON.stringify(o)).replace(/=+$/, "");
-  return `${b64({ alg: "none" })}.${b64({ role, name: "tester", exp: Date.now() / 1000 + 3600 })}.sig`;
-}
 
 const job = {
   key: "sample.job", displayName: "Sample job", description: "demo", enabled: true, isAvailable: true,
@@ -33,21 +27,16 @@ function mockFetch(overrides: Record<string, () => Response> = {}) {
   }));
 }
 
-function renderAs(role: string) {
-  sessionStorage.setItem("monitoring.token", jwt(role));
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <AuthProvider>
-        <MemoryRouter initialEntries={["/jobs/sample.job"]}>
-          <Routes><Route path="/jobs/:key" element={<JobDetail />} /></Routes>
-        </MemoryRouter>
-      </AuthProvider>
-    </QueryClientProvider>,
+const KEYCLOAK_ROLE = { viewer: "monitoring-viewer", operator: "monitoring-operator", administrator: "monitoring-administrator" } as const;
+
+function renderAs(role: keyof typeof KEYCLOAK_ROLE) {
+  return renderWithAuth(
+    <RequireAuth><Routes><Route path="/jobs/:key" element={<JobDetail />} /></Routes></RequireAuth>,
+    fakeBackend({ claims: realmClaims([KEYCLOAK_ROLE[role]]) }),
+    { route: "/jobs/sample.job" },
   );
 }
 
-beforeEach(() => sessionStorage.clear());
 afterEach(() => vi.unstubAllGlobals());
 
 describe("JobDetail role gating", () => {

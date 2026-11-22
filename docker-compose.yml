@@ -10,5 +10,22 @@ services:
       - "14333:1433"
     volumes:
       - sqldata:/var/opt/mssql
+
+  # Optional local identity provider: `docker compose --profile keycloak up -d`
+  # Imports the "monitoring" realm (clients, roles, sample users). Local development only: start-dev, in-memory/H2 data,
+  # throw-away admin credentials. Production uses your organisation's Keycloak (see README).
+  keycloak:
+    profiles: ["keycloak"]
+    image: quay.io/keycloak/keycloak:26.2
+    container_name: monitoring-keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:-admin}"
+      KC_HTTP_PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./keycloak/monitoring-realm.json:/opt/keycloak/data/import/monitoring-realm.json:ro
 volumes:
   sqldata:

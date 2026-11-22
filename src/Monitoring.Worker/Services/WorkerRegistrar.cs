@@ -15,6 +15,7 @@ public sealed class WorkerRegistrar(WorkerIdentity identity, JobRegistry registr
         var now = DateTime.UtcNow;
         var id = identity.Id;
 
+        var announce = false; // a worker appearing or changing capabilities is dashboard-visible; plain heartbeats are not
         var updated = await db.Workers.Where(w => w.WorkerId == id)
             .ExecuteUpdateAsync(s => s.SetProperty(w => w.LastSeenUtc, now).SetProperty(w => w.RunningCount, runningCount), ct);
         if (updated == 0)
@@ -26,6 +27,7 @@ public sealed class WorkerRegistrar(WorkerIdentity identity, JobRegistry registr
             });
             await db.SaveChangesAsync(ct);
             db.ChangeTracker.Clear();
+            announce = true;
         }
 
         var wanted = registry.All.Select(r => r.Key).ToHashSet();
@@ -34,6 +36,7 @@ public sealed class WorkerRegistrar(WorkerIdentity identity, JobRegistry registr
             await db.WorkerJobs.Where(w => w.WorkerId == id && w.JobKey == gone).ExecuteDeleteAsync(ct);
         foreach (var added in wanted.Where(k => !existing.Contains(k)))
             db.WorkerJobs.Add(new WorkerJob { WorkerId = id, JobKey = added });
+        if (announce || existing.Count != wanted.Count || wanted.Any(k => !existing.Contains(k))) ChangeFeed.Workers(db, "registered");
         await db.SaveChangesAsync(ct);
     }
 

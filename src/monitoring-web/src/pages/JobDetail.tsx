@@ -4,7 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
 import { hasRole, useAuth } from "../auth";
 import { ErrorBox, Loading, StatusBadge, Time } from "../components";
-import { POLL_MS } from "../config";
+import { useFallbackPoll } from "../realtime/RealtimeProvider";
 import { formatInterval } from "../format";
 import type { RunStatus } from "../types";
 import { Pager, RunsTable, STATUSES } from "./RunsTable";
@@ -17,11 +17,12 @@ export default function JobDetail() {
   const [status, setStatus] = useState<RunStatus | "">("");
   const [notice, setNotice] = useState<{ kind: "ok" | "bad"; text: string } | null>(null);
 
-  const job = useQuery({ queryKey: ["job", key], queryFn: () => api.job(key), refetchInterval: POLL_MS });
+  const poll = useFallbackPoll();
+  const job = useQuery({ queryKey: ["job", key], queryFn: () => api.job(key), refetchInterval: poll });
   const runs = useQuery({
     queryKey: ["runs", "job", key, status, page],
     queryFn: () => api.runs({ jobKey: key, status, page, pageSize: 10 }),
-    placeholderData: keepPreviousData, refetchInterval: POLL_MS,
+    placeholderData: keepPreviousData, refetchInterval: poll,
   });
 
   const refresh = () => { void qc.invalidateQueries({ queryKey: ["job", key] }); void qc.invalidateQueries({ queryKey: ["runs"] }); void qc.invalidateQueries({ queryKey: ["jobs"] }); };

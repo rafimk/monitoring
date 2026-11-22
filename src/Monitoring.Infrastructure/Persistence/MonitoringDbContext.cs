@@ -12,6 +12,8 @@ public class MonitoringDbContext(DbContextOptions<MonitoringDbContext> options) 
     public DbSet<WorkerHeartbeat> Workers => Set<WorkerHeartbeat>();
     public DbSet<WorkerJob> WorkerJobs => Set<WorkerJob>();
     public DbSet<AuditEntry> Audit => Set<AuditEntry>();
+    public DbSet<ChangeEvent> ChangeEvents => Set<ChangeEvent>();
+    public DbSet<MaintenanceState> Maintenance => Set<MaintenanceState>();
 
     /// <summary>All timestamps are stored as UTC; mark them so they serialize with a 'Z' suffix on the way out.</summary>
     protected override void ConfigureConventions(ModelConfigurationBuilder cb)
@@ -66,6 +68,7 @@ public class MonitoringDbContext(DbContextOptions<MonitoringDbContext> options) 
             e.HasIndex(x => new { x.JobKey, x.QueuedUtc });
             e.HasIndex(x => x.StartedUtc);
             e.HasIndex(x => x.LeaseExpiresUtc);
+            e.HasIndex(x => new { x.Status, x.EndedUtc }); // retention: finds old terminal runs without scanning the table
             // Safety net: one scheduled run per (job, occurrence) even if two workers race.
             e.HasIndex(x => new { x.JobKey, x.ScheduledUtc }).IsUnique().HasFilter("[Trigger] = 'Schedule'");
         });
@@ -97,6 +100,25 @@ public class MonitoringDbContext(DbContextOptions<MonitoringDbContext> options) 
             e.Property(x => x.JobKey).HasMaxLength(100);
             e.HasIndex(x => x.JobKey);
             e.HasOne<WorkerHeartbeat>().WithMany().HasForeignKey(x => x.WorkerId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        b.Entity<ChangeEvent>(e =>
+        {
+            e.ToTable("ChangeEvents");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Kind).HasConversion<string>().HasMaxLength(20);
+            e.Property(x => x.JobKey).HasMaxLength(100);
+            e.Property(x => x.Reason).HasMaxLength(40);
+            e.HasIndex(x => new { x.DispatchedUtc, x.Id });
+            e.HasIndex(x => x.CreatedUtc);
+        });
+
+        b.Entity<MaintenanceState>(e =>
+        {
+            e.ToTable("MaintenanceState");
+            e.HasKey(x => x.Task);
+            e.Property(x => x.Task).HasMaxLength(50);
+            e.Property(x => x.LastSummary).HasMaxLength(1000);
         });
 
         b.Entity<AuditEntry>(e =>

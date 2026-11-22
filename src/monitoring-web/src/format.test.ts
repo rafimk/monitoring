@@ -1,5 +1,4 @@
 import { formatDuration, formatInterval, formatTime, relative } from "./format";
-import { parseToken, hasRole } from "./auth";
 
 describe("formatDuration", () => {
   it.each([[null, "—"], [250, "250 ms"], [2000, "2.0 s"], [90_000, "1m 30s"]])("%s -> %s", (ms, out) => {
@@ -31,22 +30,3 @@ describe("relative", () => {
   });
 });
 
-function jwt(payload: object) {
-  const b64 = (o: object) => btoa(JSON.stringify(o)).replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_");
-  return `${b64({ alg: "none" })}.${b64(payload)}.sig`;
-}
-
-describe("parseToken / hasRole", () => {
-  it("reads role and name", () => {
-    const s = parseToken(jwt({ role: "operator", name: "Pat", exp: Date.now() / 1000 + 600 }));
-    expect(s?.role).toBe("operator");
-    expect(hasRole(s, "viewer")).toBe(true);
-    expect(hasRole(s, "operator")).toBe(true);
-    expect(hasRole(s, "administrator")).toBe(false);
-  });
-  it("rejects expired, unknown-role and malformed tokens", () => {
-    expect(parseToken(jwt({ role: "viewer", exp: 1 }))).toBeNull();
-    expect(parseToken(jwt({ role: "root" }))).toBeNull();
-    expect(parseToken("garbage")).toBeNull();
-  });
-});

@@ -72,6 +72,7 @@ public class RunStore(
             if (!def.Enabled && run.Trigger == TriggerSource.Schedule)
             {
                 Finish(run, RunStatus.Cancelled, now, "Skipped: job disabled");
+                ChangeFeed.Run(db, run.Id, run.JobKey, "skipped");
                 continue;
             }
 
@@ -79,7 +80,10 @@ public class RunStore(
             if (def.ConcurrencyPolicy != ConcurrencyPolicy.AllowParallel && running > 0)
             {
                 if (def.ConcurrencyPolicy == ConcurrencyPolicy.SkipIfRunning && run.Trigger == TriggerSource.Schedule)
+                {
                     Finish(run, RunStatus.Cancelled, now, "Skipped: previous run still active (overlap policy)");
+                    ChangeFeed.Run(db, run.Id, run.JobKey, "skipped");
+                }
                 continue; // otherwise wait in the queue
             }
 
@@ -96,6 +100,7 @@ public class RunStore(
                 Id = Guid.NewGuid(), RunId = run.Id, Attempt = run.Attempt,
                 Status = RunStatus.Running, StartedUtc = now, WorkerId = identity.Id,
             });
+            ChangeFeed.Run(db, run.Id, run.JobKey, "started");
             claimed.Add(new ClaimedRun(run.Id, run.JobKey, run.Trigger, run.ScheduledUtc, run.CorrelationId,
                 run.Attempt, run.CountedAttempts, run.MaxAttempts, now, lease, def.TimeoutSeconds, def.RetryBaseDelaySeconds));
         }
@@ -164,6 +169,14 @@ public class RunStore(
                 .SetProperty(a => a.Status, attemptStatus)
                 .SetProperty(a => a.EndedUtc, now)
                 .SetProperty(a => a.Error, error), CancellationToken.None);
+        // The notification commits atomically with the outcome it announces.
+        ChangeFeed.Run(db, run.Id, run.JobKey, kind switch
+        {
+            Completion.Retry => "retry",
+            Completion.Interrupted => "requeued",
+            _ => attemptStatus.ToString().ToLowerInvariant(),
+        });
+        await db.SaveChangesAsync(CancellationToken.None);
         await tx.CommitAsync(CancellationToken.None);
         return true;
     }
@@ -180,7 +193,7 @@ public class RunStore(
         var expired = await db.Runs.AsNoTracking()
             .Where(r => r.Status == RunStatus.Running && r.LeaseExpiresUtc < nowUtc)
             .OrderBy(r => r.LeaseExpiresUtc)
-            .Select(r => new { r.Id, r.Attempt, r.CountedAttempts, r.MaxAttempts })
+            .Select(r => new { r.Id, r.JobKey, r.Attempt, r.CountedAttempts, r.MaxAttempts })
             .Take(100).ToListAsync(ct);
 
         var recovered = 0;
@@ -207,6 +220,8 @@ public class RunStore(
                     .SetProperty(a => a.Status, RunStatus.Abandoned)
                     .SetProperty(a => a.EndedUtc, nowUtc)
                     .SetProperty(a => a.Error, LeaseExpiredMessage), ct);
+            ChangeFeed.Run(db, r.Id, r.JobKey, retry ? "recovered" : "abandoned");
+            await db.SaveChangesAsync(ct);
             await tx.CommitAsync(ct);
             recovered++;
         }

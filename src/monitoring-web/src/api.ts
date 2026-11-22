@@ -1,20 +1,21 @@
 import type { Attempt, JobDetail, JobSummary, Paged, Run, RunDetail, RunFilters, Summary, Worker } from "./types";
 
-export const API_BASE: string = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "http://localhost:5284";
+import { config } from "./config";
+export const API_BASE: string = config.apiBaseUrl;
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message); }
 }
 
-let tokenProvider: () => string | null = () => null;
+let tokenProvider: () => Promise<string | null> = async () => null;
 let onUnauthorized: () => void = () => {};
-export function configureApi(opts: { getToken: () => string | null; onUnauthorized: () => void }) {
+export function configureApi(opts: { getToken: () => Promise<string | null>; onUnauthorized: () => void }) {
   tokenProvider = opts.getToken;
   onUnauthorized = opts.onUnauthorized;
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const token = tokenProvider();
+  const token = await tokenProvider(); // refreshed first when close to expiry; concurrent requests share one refresh
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
@@ -43,8 +44,6 @@ const qs = (o: Record<string, string | number | undefined>) => {
 };
 
 export const api = {
-  devToken: (username: string, role: string) =>
-    request<{ token: string }>("/api/v1/auth/dev-token", { method: "POST", body: JSON.stringify({ username, role }) }),
   summary: () => request<Summary>("/api/v1/summary"),
   workers: () => request<Worker[]>("/api/v1/workers"),
   jobs: () => request<JobSummary[]>("/api/v1/jobs"),
