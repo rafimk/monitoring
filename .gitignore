@@ -1,0 +1,13 @@
+bin/
+obj/
+node_modules/
+dist/
+.vs/
+*.user
+.env
+.env.local
+appsettings.Production.json
+appsettings.*.local.json
+TestResults/
+.claude/settings.local.json
+.claude/
