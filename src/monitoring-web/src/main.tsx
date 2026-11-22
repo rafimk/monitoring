@@ -5,6 +5,7 @@ import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { ApiError } from "./api";
 import { AuthProvider } from "./auth";
+import { RealtimeProvider } from "./realtime/RealtimeProvider";
 import "./styles.css";
 
 const queryClient = new QueryClient({
@@ -21,9 +22,11 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
+        <RealtimeProvider>
         <BrowserRouter>
           <App />
         </BrowserRouter>
+        </RealtimeProvider>
       </AuthProvider>
     </QueryClientProvider>
   </StrictMode>,

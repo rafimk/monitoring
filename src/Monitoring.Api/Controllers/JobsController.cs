@@ -79,6 +79,7 @@ public class JobsController(MonitoringDbContext db, IOptions<ApiOptions> options
             RequestedBy = Actor,
         };
         db.Runs.Add(run);
+        ChangeFeed.Run(db, run.Id, key, "queued"); // committed with the run, so the notification can never be lost or premature
         Audit("job.run-now", key, null);
         await db.SaveChangesAsync(ct);
         return AcceptedAtAction(nameof(RunsController.Get), "Runs", new { id = run.Id }, new { runId = run.Id });
@@ -100,6 +101,7 @@ public class JobsController(MonitoringDbContext db, IOptions<ApiOptions> options
         {
             d.Enabled = enabled;
             d.UpdatedUtc = DateTime.UtcNow;
+            ChangeFeed.Job(db, key, enabled ? "enabled" : "disabled");
             Audit(enabled ? "job.enable" : "job.disable", key, null);
             await db.SaveChangesAsync(ct);
         }
@@ -132,6 +134,7 @@ public class JobsController(MonitoringDbContext db, IOptions<ApiOptions> options
             }
         }
 
+        ChangeFeed.Job(db, key, "updated");
         Audit("job.update", key, JsonSerializer.Serialize(req));
         await db.SaveChangesAsync(ct);
         return NoContent();

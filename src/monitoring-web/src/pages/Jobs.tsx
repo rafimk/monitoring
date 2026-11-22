@@ -2,11 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { Empty, ErrorBox, Loading, StatusBadge, Time } from "../components";
-import { POLL_MS } from "../config";
+import { useFallbackPoll } from "../realtime/RealtimeProvider";
 import { formatDuration, formatInterval, relative } from "../format";
 
 export default function Jobs() {
-  const q = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, refetchInterval: POLL_MS });
+  const poll = useFallbackPoll();
+  const q = useQuery({ queryKey: ["jobs"], queryFn: api.jobs, refetchInterval: poll });
   if (q.isLoading) return <Loading what="jobs" />;
   if (q.isError) return <ErrorBox error={q.error} retry={() => q.refetch()} />;
   const jobs = q.data!;

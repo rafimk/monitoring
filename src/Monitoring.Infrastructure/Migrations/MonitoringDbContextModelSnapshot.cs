@@ -59,6 +59,46 @@ namespace Monitoring.Infrastructure.Migrations
                     b.ToTable("AuditEntries", (string)null);
                 });
 
+            modelBuilder.Entity("Monitoring.Infrastructure.Persistence.ChangeEvent", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DispatchedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("JobKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)");
+
+                    b.Property<Guid?>("RunId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedUtc");
+
+                    b.HasIndex("DispatchedUtc", "Id");
+
+                    b.ToTable("ChangeEvents", (string)null);
+                });
+
             modelBuilder.Entity("Monitoring.Infrastructure.Persistence.JobDefinition", b =>
                 {
                     b.Property<string>("Key")
@@ -193,6 +233,8 @@ namespace Monitoring.Infrastructure.Migrations
                         .IsUnique()
                         .HasFilter("[Trigger] = 'Schedule'");
 
+                    b.HasIndex("Status", "EndedUtc");
+
                     b.HasIndex("Status", "NotBeforeUtc");
 
                     b.ToTable("JobRuns", (string)null);
@@ -229,6 +271,30 @@ namespace Monitoring.Infrastructure.Migrations
                     b.HasIndex("Enabled", "NextDueUtc");
 
                     b.ToTable("JobSchedules", (string)null);
+                });
+
+            modelBuilder.Entity("Monitoring.Infrastructure.Persistence.MaintenanceState", b =>
+                {
+                    b.Property<string>("Task")
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<DateTime>("InitializedUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<long?>("LastDurationMs")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("LastSuccessUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LastSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)");
+
+                    b.HasKey("Task");
+
+                    b.ToTable("MaintenanceState", (string)null);
                 });
 
             modelBuilder.Entity("Monitoring.Infrastructure.Persistence.RunAttempt", b =>

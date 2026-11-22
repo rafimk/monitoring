@@ -20,6 +20,7 @@ namespace Monitoring.IntegrationTests.Worker;
 public abstract class WorkerTestBase : IAsyncLifetime
 {
     private readonly List<TestWorker> _workers = [];
+    private readonly List<TestNode> _nodes = [];
     private readonly string _dbName = "Monitoring_W_" + Guid.NewGuid().ToString("N")[..12];
 
     protected string ConnectionString { get; }
@@ -40,6 +41,7 @@ public abstract class WorkerTestBase : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
+        foreach (var n in _nodes) await n.DisposeAsync();
         foreach (var w in _workers) await w.DisposeAsync();
         await using (var db = NewDb()) await db.Database.EnsureDeletedAsync();
         SqlConnection.ClearAllPools();
@@ -61,6 +63,23 @@ public abstract class WorkerTestBase : IAsyncLifetime
         _workers.Add(w);
         return w;
     }
+
+    /// <summary>Starts a full worker host with the real <see cref="WorkerCoordinator"/> (leader election per options).</summary>
+    protected async Task<TestNode> StartNodeAsync(string[] jobKeys, WorkerOptions? options = null, string? connectionString = null)
+    {
+        var n = await TestNode.StartAsync(connectionString ?? ConnectionString, Scripts, jobKeys, options ?? LeaderOptions());
+        _nodes.Add(n);
+        return n;
+    }
+
+    /// <summary>Fast timings with leader election on (the production default), so tests finish in seconds.</summary>
+    protected static WorkerOptions LeaderOptions(string? name = null, int standbyRetry = 1, int lease = 6, int heartbeat = 2) =>
+        new()
+        {
+            WorkerId = name, PollIntervalSeconds = 1, LeaseSeconds = lease, HeartbeatSeconds = heartbeat, MaxParallelism = 3,
+            SchedulerBatchSize = 50, ShutdownGraceSeconds = 10, LeaderMode = WorkerLeaderMode.ActiveStandby,
+            StandbyRetrySeconds = standbyRetry, LeaderCheckSeconds = 1,
+        };
 
     // ---- data helpers ----
 

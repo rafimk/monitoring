@@ -28,15 +28,19 @@ builder.Services.AddJob<SampleJob>("sample.job", "Sample job", "Runs every minut
 builder.Services.AddJob<SampleSlowJob>("sample.slow", "Sample slow job", "Takes ~30s on a 2 minute schedule.");
 builder.Services.AddJob<SampleFlakyJob>("sample.flaky", "Sample flaky job", "Fails once then succeeds, to show retry.");
 
+
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<WorkerIdentity>();
 builder.Services.AddSingleton<RunnerState>();
 builder.Services.AddSingleton<WorkerRegistrar>();
 builder.Services.AddSingleton<RunStore>();
-builder.Services.AddHostedService<StartupInitializer>(); // must be registered first: runs before the loops
-builder.Services.AddHostedService<HeartbeatService>();
-builder.Services.AddHostedService<SchedulerService>();
-builder.Services.AddHostedService<RunnerService>();
+// The coordinator owns the whole lifecycle: it (optionally) wins the SQL leader lock, then creates and runs the
+// StartupInitializer, HeartbeatService, SchedulerService and RunnerService for each active tenure. Those are therefore
+// not registered as hosted services themselves, and a standby node does none of their work.
+builder.Services.AddHostedService<WorkerCoordinator>();
 
-builder.Services.Configure<HostOptions>(o => o.ShutdownTimeout = TimeSpan.FromSeconds(45));
+// Leave room after the runner's grace period for the loops to stop and the leader lock to be released.
+builder.Services.AddOptions<HostOptions>().Configure<IOptions<WorkerOptions>>((h, w) =>
+    h.ShutdownTimeout = TimeSpan.FromSeconds(w.Value.ShutdownGraceSeconds + 15));
 
 await builder.Build().RunAsync();

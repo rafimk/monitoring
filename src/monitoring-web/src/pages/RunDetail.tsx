@@ -2,14 +2,15 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
 import { ErrorBox, Loading, StatusBadge, Time } from "../components";
-import { POLL_MS } from "../config";
+import { useFallbackPoll } from "../realtime/RealtimeProvider";
 import { formatDuration } from "../format";
 
 export default function RunDetail() {
   const { id = "" } = useParams();
+  const poll = useFallbackPoll();
   const q = useQuery({
     queryKey: ["run", id], queryFn: () => api.run(id),
-    refetchInterval: (query) => (["Queued", "Running"].includes(query.state.data?.run.status ?? "") ? 3000 : POLL_MS * 3),
+    refetchInterval: poll === false ? false : (query) => (["Queued", "Running"].includes(query.state.data?.run.status ?? "") ? 5000 : poll),
   });
   if (q.isLoading) return <Loading what="run" />;
   if (q.isError) return <ErrorBox error={q.error} retry={() => q.refetch()} />;

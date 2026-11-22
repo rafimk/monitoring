@@ -96,3 +96,38 @@ public class AuditEntry
     public string Target { get; set; } = "";
     public string? Details { get; set; }
 }
+
+public enum ChangeKind { Run = 1, Job = 2, Workers = 3 }
+
+/// <summary>
+/// Transactional outbox / cross-process change feed. The worker and the API write a row in the same transaction as the
+/// state change it describes; the API's dispatcher reads pending rows and pushes small notifications to dashboard
+/// clients. Rows carry only "what changed" (never the record itself): clients refetch from the normal APIs.
+/// </summary>
+public class ChangeEvent
+{
+    public long Id { get; set; }
+    public ChangeKind Kind { get; set; }
+    /// <summary>Job the change belongs to (null for worker-wide changes).</summary>
+    public string? JobKey { get; set; }
+    public Guid? RunId { get; set; }
+    /// <summary>Short machine-readable cause, e.g. queued, started, retry, succeeded, recovered, enabled.</summary>
+    public string Reason { get; set; } = "";
+    public DateTime CreatedUtc { get; set; }
+    public DateTime? DispatchedUtc { get; set; }
+}
+
+/// <summary>
+/// Bookkeeping for scheduled maintenance (one row per task, e.g. "retention"). It lets a restarted or newly elected worker
+/// know whether the last scheduled run already happened, so it neither repeats nor silently skips the work.
+/// </summary>
+public class MaintenanceState
+{
+    public string Task { get; set; } = "";
+    /// <summary>When this row was first created: the baseline for "was a run missed?" before any run has succeeded.</summary>
+    public DateTime InitializedUtc { get; set; }
+    public DateTime? LastSuccessUtc { get; set; }
+    public long? LastDurationMs { get; set; }
+    /// <summary>Counts deleted by the last successful run, e.g. "JobRuns=12, RunAttempts=30".</summary>
+    public string? LastSummary { get; set; }
+}

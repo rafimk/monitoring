@@ -15,7 +15,7 @@ namespace Monitoring.Worker.Services;
 /// </summary>
 public sealed class RunnerService(
     IServiceScopeFactory scopes, JobRegistry registry, IOptions<WorkerOptions> options, RunStore store,
-    WorkerIdentity identity, RunnerState state, ILogger<RunnerService> log, TimeProvider? timeProvider = null) : BackgroundService
+    WorkerIdentity identity, RunnerState state, ILogger<RunnerService> log, TimeProvider? timeProvider = null, Tenure? tenure = null) : BackgroundService
 {
     private readonly ConcurrentDictionary<Guid, Task> _inflight = new();
     private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
@@ -25,7 +25,7 @@ public sealed class RunnerService(
         var o = options.Value;
         log.LogInformation("Runner started as worker {WorkerId} (parallelism {Max})", identity.Id, o.MaxParallelism);
 
-        while (!stop.IsCancellationRequested)
+        while (!stop.IsCancellationRequested && tenure?.IsLost != true)
         {
             try
             {
@@ -50,6 +50,8 @@ public sealed class RunnerService(
 
         // Graceful shutdown: running jobs observe the cancelled token and are re-queued (the interrupted attempt stays
         // in the history but does not count against MaxAttempts).
+        // After lost leadership nothing is waited for: results are discarded and the leases simply expire.
+        if (tenure?.IsLost == true) return;
         var grace = Task.WhenAll(_inflight.Values);
         await Task.WhenAny(grace, Task.Delay(TimeSpan.FromSeconds(o.ShutdownGraceSeconds), CancellationToken.None));
     }
@@ -68,8 +70,8 @@ public sealed class RunnerService(
     private async Task ExecuteCoreAsync(ClaimedRun run, CancellationToken stop)
     {
         var o = options.Value;
-        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(stop);
-        using var renewCts = new CancellationTokenSource();
+        using var runCts = CancellationTokenSource.CreateLinkedTokenSource(stop, tenure?.Lost ?? CancellationToken.None);
+        using var renewCts = CancellationTokenSource.CreateLinkedTokenSource(tenure?.Lost ?? CancellationToken.None); // lost leadership: stop renewing so the lease expires
         runCts.CancelAfter(TimeSpan.FromSeconds(run.TimeoutSeconds));
 
         // Lease renewal runs beside the job. If ownership cannot be kept, cancel the job before the lease can expire.
@@ -85,6 +87,8 @@ public sealed class RunnerService(
             if (loss is not null) runCts.Cancel();
             return loss;
         });
+
+        if (tenure?.IsLost == true) { renewCts.Cancel(); await renewTask; return; } // claimed just before leadership was lost
 
         var status = RunStatus.Succeeded;
         string? error = null;
@@ -116,6 +120,15 @@ public sealed class RunnerService(
         finally
         {
             renewCts.Cancel();
+        }
+
+        // Leadership lost (fail closed): whatever the job did, do not write its outcome. The attempt stays Running
+        // until its lease expires; the successor then recovers it under the normal at-least-once policy.
+        if (tenure?.IsLost == true)
+        {
+            await renewTask;
+            log.LogWarning("Run {RunId} attempt {Attempt} ended after this node lost the worker leadership; its result is discarded", run.Id, run.Attempt);
+            return;
         }
 
         var lossReason = await renewTask;

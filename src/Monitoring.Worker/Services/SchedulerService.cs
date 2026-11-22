@@ -73,14 +73,17 @@ public sealed class SchedulerService(
 
             foreach (var scheduled in decision.RunTimes)
             {
-                db.Runs.Add(new JobRun
+                var run = new JobRun
                 {
                     Id = Guid.NewGuid(), JobKey = s.JobKey, Trigger = TriggerSource.Schedule,
                     Status = RunStatus.Queued, ScheduledUtc = scheduled, QueuedUtc = now, NotBeforeUtc = now,
                     MaxAttempts = def!.MaxAttempts, CorrelationId = Guid.NewGuid().ToString("N"),
-                });
+                };
+                db.Runs.Add(run);
+                ChangeFeed.Run(db, run.Id, run.JobKey, "queued"); // same transaction as the occurrence itself
             }
             if (decision.RunTimes.Count > 0) s.LastDispatchedUtc = now;
+            if (decision.RunTimes.Count > 0 || decision.Missed > 0) ChangeFeed.Job(db, s.JobKey, "scheduled"); // next-due moved
             if (decision.Missed > 0)
                 log.LogWarning("Schedule {Key}: {Missed} missed occurrence(s); policy {Policy} enqueued {Count}",
                     s.JobKey, decision.Missed, def!.MissedRunPolicy, decision.RunTimes.Count);
