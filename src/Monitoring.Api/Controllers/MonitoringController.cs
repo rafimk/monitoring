@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using Monitoring.Contracts;
 using Monitoring.Infrastructure.Persistence;
 
+
 namespace Monitoring.Api.Controllers;
 
 [ApiController]
@@ -26,12 +27,14 @@ public class MonitoringController(MonitoringDbContext db, IOptions<ApiOptions> o
         var now = DateTime.UtcNow;
         var since = now.AddHours(-24);
 
-        var defs = await db.Definitions.AsNoTracking().Select(d => new { d.Enabled, d.IsAvailable }).ToListAsync(ct);
+        var live = (await WorkerCapacity.LiveJobKeys(db, now.AddSeconds(-options.Value.WorkerStaleSeconds)).ToListAsync(ct)).ToHashSet();
+        var defs = await db.Definitions.AsNoTracking().Select(d => new { d.Key, d.Enabled }).ToListAsync(ct);
         var running = await db.Runs.CountAsync(r => r.Status == RunStatus.Running, ct);
         var queued = await db.Runs.CountAsync(r => r.Status == RunStatus.Queued, ct);
         var overdueCutoff = now.AddSeconds(-30);
-        var overdue = await db.Schedules.CountAsync(s => s.Enabled && s.NextDueUtc < overdueCutoff
-            && db.Definitions.Any(d => d.Key == s.JobKey && d.Enabled && d.IsAvailable), ct);
+        var overdueKeys = await db.Schedules.Where(s => s.Enabled && s.NextDueUtc < overdueCutoff
+            && db.Definitions.Any(d => d.Key == s.JobKey && d.Enabled)).Select(s => s.JobKey).ToListAsync(ct);
+        var overdue = overdueKeys.Count(live.Contains);
 
         // Finished runs in the last 24h, projected to the two columns needed for the hourly trend.
         var finished = await db.Runs.AsNoTracking()
@@ -52,7 +55,7 @@ public class MonitoringController(MonitoringDbContext db, IOptions<ApiOptions> o
         var workers = (await db.Workers.AsNoTracking().Where(w => w.LastSeenUtc >= now.AddHours(-1)).ToListAsync(ct))
             .Select(w => ToDto(w, now)).ToList();
 
-        return new SummaryDto(defs.Count, defs.Count(d => d.Enabled), defs.Count(d => !d.IsAvailable), running, queued, overdue,
+        return new SummaryDto(defs.Count, defs.Count(d => d.Enabled), defs.Count(d => !live.Contains(d.Key)), running, queued, overdue,
             ok, bad, finished.Count == 0 ? null : Math.Round(100.0 * ok / finished.Count, 1),
             workers.Count(w => w.State == "online"), workers.Count(w => w.State != "online"), trend);
     }

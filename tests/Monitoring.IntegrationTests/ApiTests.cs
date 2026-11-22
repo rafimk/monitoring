@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Monitoring.Contracts;
+using Monitoring.Infrastructure.Persistence;
 
 namespace Monitoring.IntegrationTests;
 
@@ -183,6 +184,62 @@ public class ApiTests(ApiFixture fx)
         Assert.Equal(2, s.GetProperty("totalJobs").GetInt32());
         Assert.Equal(1, s.GetProperty("unavailableJobs").GetInt32());
         Assert.Equal(24, s.GetProperty("trend").GetArrayLength());
+    }
+
+    // ---- availability is derived from live workers that implement the job ----
+
+    [Fact]
+    public async Task Availability_FollowsLiveCapableWorkers_NotAnyoneElsesRegistration()
+    {
+        const string key = "test.avail";
+        var now = DateTime.UtcNow;
+        await fx.QueryDbAsync(async db =>
+        {
+            db.Definitions.Add(new JobDefinition { Key = key, DisplayName = "Avail", CreatedUtc = now, UpdatedUtc = now });
+            // Only a long-dead worker implements it, plus a live worker that implements something else.
+            db.Workers.Add(new WorkerHeartbeat { WorkerId = "w-dead", Host = "h", StartedUtc = now.AddDays(-1), LastSeenUtc = now.AddHours(-5) });
+            db.Workers.Add(new WorkerHeartbeat { WorkerId = "w-other", Host = "h", StartedUtc = now, LastSeenUtc = now });
+            db.WorkerJobs.Add(new WorkerJob { WorkerId = "w-dead", JobKey = key });
+            db.WorkerJobs.Add(new WorkerJob { WorkerId = "w-other", JobKey = "something.else" });
+            await db.SaveChangesAsync();
+            return 0;
+        });
+        try
+        {
+            var c = await fx.ClientAsync("operator");
+            Assert.False((await c.GetFromJsonAsync<JsonElement>($"/api/v1/jobs/{key}", Json)).GetProperty("isAvailable").GetBoolean());
+            Assert.Equal(HttpStatusCode.Conflict, (await c.PostAsync($"/api/v1/jobs/{key}/run", null)).StatusCode);
+
+            // A second live worker that does implement it makes the job available, regardless of the first one's absence.
+            await fx.QueryDbAsync(async db =>
+            {
+                db.Workers.Add(new WorkerHeartbeat { WorkerId = "w-live", Host = "h", StartedUtc = now, LastSeenUtc = DateTime.UtcNow });
+                db.WorkerJobs.Add(new WorkerJob { WorkerId = "w-live", JobKey = key });
+                await db.SaveChangesAsync();
+                return 0;
+            });
+            Assert.True((await c.GetFromJsonAsync<JsonElement>($"/api/v1/jobs/{key}", Json)).GetProperty("isAvailable").GetBoolean());
+            Assert.Equal(HttpStatusCode.Accepted, (await c.PostAsync($"/api/v1/jobs/{key}/run", null)).StatusCode);
+        }
+        finally
+        {
+            await fx.QueryDbAsync(async db =>
+            {
+                await db.Runs.Where(r => r.JobKey == key).ExecuteDeleteAsync();
+                await db.Definitions.Where(d => d.Key == key).ExecuteDeleteAsync();
+                await db.Workers.Where(w => w.WorkerId.StartsWith("w-")).ExecuteDeleteAsync(); // cascades WorkerJobs
+                return 0;
+            });
+        }
+    }
+
+    [Fact]
+    public async Task Runs_ExposeAttemptsUsedSeparatelyFromAttemptSequence()
+    {
+        var c = await fx.ClientAsync("viewer");
+        var first = (await c.GetFromJsonAsync<JsonElement>("/api/v1/runs?pageSize=1", Json)).GetProperty("items")[0];
+        Assert.Equal(1, first.GetProperty("attempt").GetInt32());
+        Assert.Equal(1, first.GetProperty("attemptsUsed").GetInt32());
     }
 
     // ---- operational ----

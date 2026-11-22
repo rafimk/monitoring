@@ -68,6 +68,16 @@ If `dotnet --version` does not print `10.x` (for example because the SDK is inst
 $env:PATH = "$env:USERPROFILE\.dotnet;$env:PATH"; $env:DOTNET_ROOT = "$env:USERPROFILE\.dotnet"
 ```
 
+**Which solution to open.** The repository has three solution files at the root, all in the same folder, so pick whichever suits what you are doing:
+
+| File | Contains | Use it to |
+| --- | --- | --- |
+| `Monitoring.sln` | Everything, including both test projects | Work on the whole system and run all tests |
+| `Monitoring.Api.sln` | `Monitoring.Api` + Contracts, Application, Infrastructure | Open, debug and run **only the API** in its own IDE window |
+| `Monitoring.Worker.sln` | `Monitoring.Worker` + Contracts, Application, Infrastructure | Open, debug and run **only the worker** in its own IDE window |
+
+The API and worker are separate processes with a shared database, so you can run each from its own solution (for example two Visual Studio or Rider windows) while the other runs elsewhere. Both have Development launch profiles (`http` for the API on port 5284, `Monitoring.Worker` for the worker) that set the environment for you. Command-line builds work the same way: `dotnet build Monitoring.Api.sln`, `dotnet build Monitoring.Worker.sln`.
+
 **Step 1 – Get to the repository folder** (all `dotnet` and `docker` commands run from here):
 
 ```powershell
@@ -154,7 +164,8 @@ Configuration keys (appsettings, user-secrets or environment variables with `__`
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ConnectionStrings:Monitoring` | none (required) | SQL Server connection string; startup fails with a clear message if missing |
-| `Worker:PollIntervalSeconds` / `LeaseSeconds` / `HeartbeatSeconds` | 2 / 60 / 15 | Poll cadence; run lease length (must be ≥ 2× heartbeat); heartbeat period |
+| `Worker:WorkerId` | host-pid | Optional readable name prefix (letters, digits, `.`, `_`, `-`, max 80); a random per-process suffix is always appended |
+| `Worker:PollIntervalSeconds` / `LeaseSeconds` / `HeartbeatSeconds` | 2 / 60 / 15 | Poll cadence; run lease length (must be ≥ 2× heartbeat; also the window in which a worker counts as live); lease renewal and heartbeat period |
 | `Worker:MaxParallelism` / `SchedulerBatchSize` / `ShutdownGraceSeconds` | 4 / 50 / 30 | Concurrent runs per worker; schedules claimed per poll; wait for running jobs on shutdown |
 | `Worker:ApplyMigrationsOnStartup` / `SeedSampleData` | false | Development conveniences only |
 | `Api:JwtKey` (≥ 32 chars), `JwtIssuer`, `JwtAudience` | none (required key) | Token validation; supply the key from secure configuration |
@@ -164,15 +175,31 @@ Configuration keys (appsettings, user-secrets or environment variables with `__`
 
 Verify the key behaviour: scheduled `sample.job` runs appear every minute; stop the API and confirm new runs keep being recorded (the worker owns scheduling); start a second worker and check no occurrence runs twice; hard-kill a worker mid-run and watch the other recover it after the lease expires (attempt 1 `Abandoned`, attempt 2 runs elsewhere).
 
-Tests: `dotnet test` (unit tests need nothing; the API integration tests use a throwaway `Monitoring_Test` database on the Docker SQL Server, override with `MONITORING_TEST_CS`) and `cd src/monitoring-web; npm test`.
+Tests: `dotnet test` and `cd src/monitoring-web; npm test`.
+
+- Unit tests need nothing (lease timing is tested with a fake clock).
+- Integration tests need the Docker SQL Server (`docker compose up -d`). API tests use a throwaway `Monitoring_Test` database (override with `MONITORING_TEST_CS`). Worker tests (`tests/Monitoring.IntegrationTests/Worker`) run real worker instances and give **each test its own temporary database** (`Monitoring_W_<random>`, dropped afterwards); override the server with `MONITORING_TEST_SERVER_CS` (its `Database` is replaced). They take about a minute because they wait on real timers (leases, retry backoff, a job longer than its interval).
+- Without a reachable SQL Server the integration tests fail at setup; run `dotnet test tests/Monitoring.UnitTests` on its own in that case.
 
 ### Behaviour worth knowing
 
 - **Missed runs** (per job, default `CoalesceOne`): after downtime, one run for the latest missed occurrence is enqueued; `Skip` drops missed occurrences; `CatchUpCapped` enqueues up to 5. The next due time stays anchored to the original cadence (no drift).
 - **Overlap** (per job, default `SkipIfRunning`): a scheduled occurrence that comes due while the previous run is still active is recorded as `Cancelled` ("Skipped: previous run still active"); manual runs wait in the queue instead.
-- **Retries:** failed or timed-out runs retry with exponential backoff (`RetryBaseDelaySeconds`, doubling) up to `MaxAttempts`; a graceful worker shutdown re-queues a running job without consuming an attempt.
-- **At-least-once:** if a worker dies mid-run the run is recovered after its lease expires, so job code must be idempotent.
+- **Retries and attempt numbering:** failed or timed-out runs retry with exponential backoff (`RetryBaseDelaySeconds`, doubling) up to `MaxAttempts`. Every started attempt gets the next sequence number (`Attempt`, never reused or decremented) and keeps its own history row. A graceful worker shutdown re-queues the run and records the interrupted attempt as `Cancelled` ("Worker shutting down"), but it is **not charged** to the retry budget: `AttemptsUsed` (the counter compared with `MaxAttempts`) is unchanged, so a deploy can never exhaust a job's retries. `JobExecutionContext.Attempt` is the sequence number.
+- **At-least-once, never exactly-once:** if a worker dies, stalls or loses its database connection mid-run, the run is recovered after its lease expires and may execute again, so job code must be idempotent. Recovered attempts are charged to the retry budget (they may have run) and recorded as `Abandoned`.
+- **Lease ownership:** a running attempt holds a lease that its worker renews every `Worker:HeartbeatSeconds`. Every write on behalf of an attempt (renew, finish, re-queue) is a compare-and-set on *run id + worker instance + attempt number + Running*, so a zombie attempt can never overwrite a later attempt, even one claimed by the same worker. If renewal fails, the worker retries briefly while the persisted lease is still valid; it cancels the job at `lease expiry - LeaseSeconds/4` at the latest, i.e. **before** another worker is allowed to recover the run, and discards any result the job returns afterwards. A job that ignores cancellation can still keep running after that point (see risks below).
+- **Worker identity:** every worker process gets a unique instance id, `"{Worker:WorkerId or host-pid}-{random}"`. `Worker:WorkerId` is only a readable prefix, so two workers configured with the same name cannot share a heartbeat row or each other's leases.
+- **Job availability** is derived, not stored: a job is *available* while at least one worker with a fresh heartbeat has registered an implementation (`WorkerJobs` table). Workers may register different jobs; starting one never marks another worker's jobs unavailable. A worker only claims runs for jobs it implements, the scheduler only enqueues occurrences while some live worker can run the job, and run-now is rejected (409) when none can.
 - Error text is truncated and has `password=`/`token=`-style values redacted before it is stored or returned.
+
+### Known reliability limits
+
+- **Non-cooperative jobs:** cancellation (timeout, shutdown, lost lease) is a `CancellationToken`. A job that ignores it keeps running and may overlap with the recovered attempt; only idempotent job code makes that safe. A shutdown also waits at most `Worker:ShutdownGraceSeconds` for such jobs, after which the process exits and the run is recovered via lease expiry instead of being re-queued immediately.
+- **Clock skew:** lease expiry, due times and recovery use each worker's own UTC clock. Skew between worker hosts larger than the safety margin (`LeaseSeconds/4`) can cause early recovery of a healthy run or late recovery of a dead one; keep hosts NTP-synchronised.
+- **Database outage while finishing a run:** if the final result cannot be written, the run stays `Running` until its lease expires and then runs again (at-least-once).
+- **Single global claim lock:** run claims are serialised with one SQL application lock; fine for hundreds of runs per minute, a throughput ceiling beyond that.
+- **Queue ordering:** a queued manual run that is waiting behind an active run of the same job occupies a slot in the claim window (the oldest max(50, 4 × free slots) queued runs for the worker's jobs); a very large backlog of blocked runs can delay unrelated ones.
+- **Stale worker rows** are purged after 7 days at worker startup; the dashboard shows recent ones as stale/offline meanwhile.
 
 Not yet implemented: cron schedules, retention cleanup, alert channels, schedule editing from the dashboard (the API supports it via `PUT /api/v1/jobs/{key}`), and the Phase 5 deployment scripts and runbook.
 

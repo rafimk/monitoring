@@ -49,7 +49,7 @@ public class RunsController(MonitoringDbContext db) : ControllerBase
     }
 
     private static RunDto ToDto(JobRun r) => new(r.Id, r.JobKey, r.Trigger, r.Status, r.ScheduledUtc, r.QueuedUtc,
-        r.StartedUtc, r.EndedUtc, r.DurationMs, r.Attempt, r.MaxAttempts, r.WorkerId, r.CorrelationId, r.RequestedBy, r.Error);
+        r.StartedUtc, r.EndedUtc, r.DurationMs, r.Attempt, r.CountedAttempts, r.MaxAttempts, r.WorkerId, r.CorrelationId, r.RequestedBy, r.Error);
 
     private ObjectResult BadRequestProblem(string detail) => Problem(detail, statusCode: 400, title: "Invalid request");
 }

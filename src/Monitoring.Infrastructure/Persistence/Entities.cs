@@ -8,8 +8,6 @@ public class JobDefinition
     public string DisplayName { get; set; } = "";
     public string Description { get; set; } = "";
     public bool Enabled { get; set; } = true;
-    /// <summary>False when no registered implementation exists in the worker host.</summary>
-    public bool IsAvailable { get; set; } = true;
     public int TimeoutSeconds { get; set; } = 300;
     public int MaxAttempts { get; set; } = 3;
     public int RetryBaseDelaySeconds { get; set; } = 10;
@@ -42,8 +40,17 @@ public class JobRun
     public DateTime? StartedUtc { get; set; }
     public DateTime? EndedUtc { get; set; }
     public long? DurationMs { get; set; }
-    /// <summary>Attempts started so far (0 while the first attempt is still queued).</summary>
+    /// <summary>
+    /// Sequence number of the most recently started attempt (0 while the first attempt is still queued).
+    /// Strictly increasing and never decremented, so it always matches <see cref="RunAttempt.Attempt"/>.
+    /// It also acts as the fencing token for every write made on behalf of a running attempt.
+    /// </summary>
     public int Attempt { get; set; }
+    /// <summary>
+    /// Attempts that count toward <see cref="MaxAttempts"/>. A graceful-shutdown interruption is recorded in the
+    /// attempt history but not counted, so it never exhausts the retry budget.
+    /// </summary>
+    public int CountedAttempts { get; set; }
     public int MaxAttempts { get; set; } = 1;
     public string? WorkerId { get; set; }
     public DateTime? LeaseExpiresUtc { get; set; }
@@ -71,6 +78,13 @@ public class WorkerHeartbeat
     public DateTime StartedUtc { get; set; }
     public DateTime LastSeenUtc { get; set; }
     public int RunningCount { get; set; }
+}
+
+/// <summary>A job key that a worker instance can execute (its registered implementations).</summary>
+public class WorkerJob
+{
+    public string WorkerId { get; set; } = "";
+    public string JobKey { get; set; } = "";
 }
 
 public class AuditEntry

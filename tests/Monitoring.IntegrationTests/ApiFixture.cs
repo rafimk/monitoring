@@ -24,6 +24,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
     {
         builder.UseEnvironment("Development"); // enables the dev token endpoint
         builder.UseSetting("ConnectionStrings:Monitoring", ConnectionString);
+        builder.UseSetting("Api:WorkerStaleSeconds", "3600"); // seeded heartbeats must not go stale mid-run
     }
 
     public async Task InitializeAsync()
@@ -35,7 +36,10 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
 
         var now = DateTime.UtcNow;
         db.Definitions.Add(new JobDefinition { Key = JobKey, DisplayName = "Test job", CreatedUtc = now, UpdatedUtc = now });
-        db.Definitions.Add(new JobDefinition { Key = "test.missing", DisplayName = "Missing impl", IsAvailable = false, CreatedUtc = now, UpdatedUtc = now });
+        // "test.missing" is defined but no worker implements it.
+        db.Definitions.Add(new JobDefinition { Key = "test.missing", DisplayName = "Missing impl", CreatedUtc = now, UpdatedUtc = now });
+        db.Workers.Add(new WorkerHeartbeat { WorkerId = "w1", Host = "test", StartedUtc = now, LastSeenUtc = now });
+        db.WorkerJobs.Add(new WorkerJob { WorkerId = "w1", JobKey = JobKey });
         db.Schedules.Add(new JobSchedule { Id = Guid.NewGuid(), JobKey = JobKey, IntervalSeconds = 60, NextDueUtc = now.AddMinutes(1) });
         for (var i = 0; i < 30; i++)
         {
@@ -45,7 +49,7 @@ public sealed class ApiFixture : WebApplicationFactory<Program>, IAsyncLifetime
                 Status = i % 5 == 0 ? RunStatus.Failed : RunStatus.Succeeded,
                 ScheduledUtc = now.AddMinutes(-i - 10), QueuedUtc = now.AddMinutes(-i - 10),
                 NotBeforeUtc = now.AddMinutes(-i - 10), StartedUtc = now.AddMinutes(-i - 10),
-                EndedUtc = now.AddMinutes(-i - 10).AddSeconds(2), DurationMs = 2000, Attempt = 1, MaxAttempts = 3,
+                EndedUtc = now.AddMinutes(-i - 10).AddSeconds(2), DurationMs = 2000, Attempt = 1, CountedAttempts = 1, MaxAttempts = 3,
                 WorkerId = "w1", CorrelationId = Guid.NewGuid().ToString("N"),
                 Error = i % 5 == 0 ? "Boom" : null,
             });

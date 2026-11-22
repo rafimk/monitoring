@@ -1,4 +1,6 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.RegularExpressions;
+using Microsoft.Extensions.Options;
 
 namespace Monitoring.Worker;
 
@@ -6,7 +8,11 @@ public sealed class WorkerOptions
 {
     public const string Section = "Worker";
 
-    /// <summary>Optional stable id; defaults to host-pid-random so each process instance is distinct.</summary>
+    /// <summary>
+    /// Optional human-readable name (shown in the dashboard). It is only a prefix: every process instance appends a
+    /// random suffix, so two workers configured with the same name still have distinct identities and can never
+    /// overwrite each other's heartbeat or hold each other's run leases.
+    /// </summary>
     public string? WorkerId { get; set; }
 
     [Range(1, 300)] public int PollIntervalSeconds { get; set; } = 2;
@@ -20,25 +26,40 @@ public sealed class WorkerOptions
     public bool ApplyMigrationsOnStartup { get; set; }
     /// <summary>Development only: create the sample schedules.</summary>
     public bool SeedSampleData { get; set; }
+
+    /// <summary>A job is cancelled this long before its lease would expire if the lease cannot be renewed.</summary>
+    public TimeSpan LeaseSafetyMargin => TimeSpan.FromSeconds(Math.Max(0.5, LeaseSeconds / 4.0));
+    /// <summary>Pause between renewal retries after a transient failure.</summary>
+    public TimeSpan RenewalRetryDelay => TimeSpan.FromMilliseconds(500);
 }
 
-public sealed class WorkerOptionsValidator : Microsoft.Extensions.Options.IValidateOptions<WorkerOptions>
+public sealed partial class WorkerOptionsValidator : IValidateOptions<WorkerOptions>
 {
-    public Microsoft.Extensions.Options.ValidateOptionsResult Validate(string? name, WorkerOptions o)
+    [GeneratedRegex("^[A-Za-z0-9._-]{1,80}$")]
+    private static partial Regex NamePattern();
+
+    public ValidateOptionsResult Validate(string? name, WorkerOptions o)
     {
-        // Lease must outlive at least two heartbeats or healthy runs would be recovered as abandoned.
+        // The lease must outlive at least two heartbeats, otherwise healthy runs would be recovered as abandoned.
         if (o.LeaseSeconds < o.HeartbeatSeconds * 2)
-            return Microsoft.Extensions.Options.ValidateOptionsResult.Fail(
-                "Worker:LeaseSeconds must be at least twice Worker:HeartbeatSeconds.");
-        return Microsoft.Extensions.Options.ValidateOptionsResult.Success;
+            return ValidateOptionsResult.Fail("Worker:LeaseSeconds must be at least twice Worker:HeartbeatSeconds.");
+        if (!string.IsNullOrWhiteSpace(o.WorkerId) && !NamePattern().IsMatch(o.WorkerId))
+            return ValidateOptionsResult.Fail("Worker:WorkerId may only contain letters, digits, '.', '_' and '-' (max 80 characters).");
+        return ValidateOptionsResult.Success;
     }
 }
 
 /// <summary>Unique identity of this worker process instance.</summary>
-public sealed class WorkerIdentity(Microsoft.Extensions.Options.IOptions<WorkerOptions> options)
+public sealed class WorkerIdentity(IOptions<WorkerOptions> options)
 {
-    public string Id { get; } = !string.IsNullOrWhiteSpace(options.Value.WorkerId)
-        ? options.Value.WorkerId!
-        : $"{Environment.MachineName}-{Environment.ProcessId}-{Guid.NewGuid().ToString("N")[..6]}";
+    /// <summary>"{name}-{random}" — unique per process even when the configured name is shared.</summary>
+    public string Id { get; } = Build(options.Value.WorkerId);
     public DateTime StartedUtc { get; } = DateTime.UtcNow;
+
+    private static string Build(string? configured)
+    {
+        var name = string.IsNullOrWhiteSpace(configured) ? $"{Environment.MachineName}-{Environment.ProcessId}" : configured.Trim();
+        if (name.Length > 80) name = name[..80];
+        return $"{name}-{Guid.NewGuid().ToString("N")[..8]}";
+    }
 }

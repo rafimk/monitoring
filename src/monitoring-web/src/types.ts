@@ -17,7 +17,11 @@ export interface JobDetail extends Omit<JobSummary, "runningCount"> {
 
 export interface Run {
   id: string; jobKey: string; trigger: TriggerSource; status: RunStatus; scheduledUtc: string; queuedUtc: string;
-  startedUtc: string | null; endedUtc: string | null; durationMs: number | null; attempt: number; maxAttempts: number;
+  startedUtc: string | null; endedUtc: string | null; durationMs: number | null;
+  /** Sequence number of the latest attempt (includes attempts interrupted by a worker shutdown). */
+  attempt: number;
+  /** Attempts counted against maxAttempts. */
+  attemptsUsed: number; maxAttempts: number;
   workerId: string | null; correlationId: string; requestedBy: string | null; error: string | null;
 }
 

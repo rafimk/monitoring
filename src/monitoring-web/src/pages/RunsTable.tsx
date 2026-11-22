@@ -15,7 +15,7 @@ export function RunsTable({ data, showJob = true }: { data: Paged<Run>; showJob?
           <td data-label="Trigger">{r.trigger}{r.requestedBy ? ` (${r.requestedBy})` : ""}</td>
           <td data-label="Started"><Time iso={r.startedUtc ?? r.queuedUtc} /></td>
           <td data-label="Duration">{formatDuration(r.durationMs)}</td>
-          <td data-label="Attempt">{r.attempt}/{r.maxAttempts}</td>
+          <td data-label="Attempt">{r.attemptsUsed}/{r.maxAttempts}</td>
           <td data-label="Worker" className="small">{r.workerId ?? "—"}</td>
           <td data-label="Error" className="err">{r.error}</td>
         </tr>))}</tbody>

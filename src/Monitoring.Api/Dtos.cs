@@ -20,7 +20,11 @@ public sealed record JobDetailDto(
 
 public sealed record RunDto(
     Guid Id, string JobKey, TriggerSource Trigger, RunStatus Status, DateTime ScheduledUtc, DateTime QueuedUtc,
-    DateTime? StartedUtc, DateTime? EndedUtc, long? DurationMs, int Attempt, int MaxAttempts,
+    DateTime? StartedUtc, DateTime? EndedUtc, long? DurationMs,
+    /// <summary>Sequence number of the latest attempt (matches the attempt history; includes interrupted attempts).</summary>
+    int Attempt,
+    /// <summary>Attempts that count toward <paramref name="MaxAttempts"/> (shutdown interruptions are excluded).</summary>
+    int AttemptsUsed, int MaxAttempts,
     string? WorkerId, string CorrelationId, string? RequestedBy, string? Error);
 
 public sealed record AttemptDto(int Attempt, RunStatus Status, DateTime StartedUtc, DateTime? EndedUtc, string WorkerId, string? Error);

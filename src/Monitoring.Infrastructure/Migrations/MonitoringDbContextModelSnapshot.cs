@@ -17,7 +17,7 @@ namespace Monitoring.Infrastructure.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "8.0.11")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -86,9 +86,6 @@ namespace Monitoring.Infrastructure.Migrations
                     b.Property<bool>("Enabled")
                         .HasColumnType("bit");
 
-                    b.Property<bool>("IsAvailable")
-                        .HasColumnType("bit");
-
                     b.Property<int>("MaxAttempts")
                         .HasColumnType("int");
 
@@ -129,6 +126,9 @@ namespace Monitoring.Infrastructure.Migrations
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
+
+                    b.Property<int>("CountedAttempts")
+                        .HasColumnType("int");
 
                     b.Property<long?>("DurationMs")
                         .HasColumnType("bigint");
@@ -296,6 +296,23 @@ namespace Monitoring.Infrastructure.Migrations
                     b.ToTable("WorkerHeartbeats", (string)null);
                 });
 
+            modelBuilder.Entity("Monitoring.Infrastructure.Persistence.WorkerJob", b =>
+                {
+                    b.Property<string>("WorkerId")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.Property<string>("JobKey")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
+                    b.HasKey("WorkerId", "JobKey");
+
+                    b.HasIndex("JobKey");
+
+                    b.ToTable("WorkerJobs", (string)null);
+                });
+
             modelBuilder.Entity("Monitoring.Infrastructure.Persistence.JobSchedule", b =>
                 {
                     b.HasOne("Monitoring.Infrastructure.Persistence.JobDefinition", null)
@@ -310,6 +327,15 @@ namespace Monitoring.Infrastructure.Migrations
                     b.HasOne("Monitoring.Infrastructure.Persistence.JobRun", null)
                         .WithMany()
                         .HasForeignKey("RunId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Monitoring.Infrastructure.Persistence.WorkerJob", b =>
+                {
+                    b.HasOne("Monitoring.Infrastructure.Persistence.WorkerHeartbeat", null)
+                        .WithMany()
+                        .HasForeignKey("WorkerId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

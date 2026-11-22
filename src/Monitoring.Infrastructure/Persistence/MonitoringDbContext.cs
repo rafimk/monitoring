@@ -10,6 +10,7 @@ public class MonitoringDbContext(DbContextOptions<MonitoringDbContext> options) 
     public DbSet<JobRun> Runs => Set<JobRun>();
     public DbSet<RunAttempt> Attempts => Set<RunAttempt>();
     public DbSet<WorkerHeartbeat> Workers => Set<WorkerHeartbeat>();
+    public DbSet<WorkerJob> WorkerJobs => Set<WorkerJob>();
     public DbSet<AuditEntry> Audit => Set<AuditEntry>();
 
     /// <summary>All timestamps are stored as UTC; mark them so they serialize with a 'Z' suffix on the way out.</summary>
@@ -86,6 +87,16 @@ public class MonitoringDbContext(DbContextOptions<MonitoringDbContext> options) 
             e.HasKey(x => x.WorkerId);
             e.Property(x => x.WorkerId).HasMaxLength(100);
             e.Property(x => x.Host).HasMaxLength(200);
+        });
+
+        b.Entity<WorkerJob>(e =>
+        {
+            e.ToTable("WorkerJobs");
+            e.HasKey(x => new { x.WorkerId, x.JobKey });
+            e.Property(x => x.WorkerId).HasMaxLength(100);
+            e.Property(x => x.JobKey).HasMaxLength(100);
+            e.HasIndex(x => x.JobKey);
+            e.HasOne<WorkerHeartbeat>().WithMany().HasForeignKey(x => x.WorkerId).OnDelete(DeleteBehavior.Cascade);
         });
 
         b.Entity<AuditEntry>(e =>

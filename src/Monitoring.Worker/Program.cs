@@ -30,6 +30,8 @@ builder.Services.AddJob<SampleFlakyJob>("sample.flaky", "Sample flaky job", "Fai
 
 builder.Services.AddSingleton<WorkerIdentity>();
 builder.Services.AddSingleton<RunnerState>();
+builder.Services.AddSingleton<WorkerRegistrar>();
+builder.Services.AddSingleton<RunStore>();
 builder.Services.AddHostedService<StartupInitializer>(); // must be registered first: runs before the loops
 builder.Services.AddHostedService<HeartbeatService>();
 builder.Services.AddHostedService<SchedulerService>();

@@ -12,7 +12,7 @@ namespace Monitoring.Worker.Services;
 /// recovers runs whose lease expired.
 /// </summary>
 public sealed class SchedulerService(
-    IServiceScopeFactory scopes, IOptions<WorkerOptions> options, ILogger<SchedulerService> log) : BackgroundService
+    IServiceScopeFactory scopes, RunStore store, IOptions<WorkerOptions> options, ILogger<SchedulerService> log) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stop)
     {
@@ -22,7 +22,8 @@ public sealed class SchedulerService(
             try
             {
                 await DispatchDueAsync(stop);
-                await RecoverExpiredAsync(stop);
+                var recovered = await store.RecoverExpiredAsync(DateTime.UtcNow, stop);
+                if (recovered > 0) log.LogWarning("Recovered {Count} run(s) with expired leases", recovered);
             }
             catch (OperationCanceledException) when (stop.IsCancellationRequested) { break; }
             catch (Exception ex)
@@ -34,7 +35,7 @@ public sealed class SchedulerService(
         }
     }
 
-    internal async Task DispatchDueAsync(CancellationToken ct)
+    public async Task DispatchDueAsync(CancellationToken ct)
     {
         using var scope = scopes.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<MonitoringDbContext>();
@@ -51,11 +52,14 @@ public sealed class SchedulerService(
 
         var keys = due.Select(d => d.JobKey).Distinct().ToList();
         var defs = await db.Definitions.Where(d => keys.Contains(d.Key)).ToDictionaryAsync(d => d.Key, ct);
+        // A job is only dispatched while at least one live worker can execute it (otherwise occurrences would pile up
+        // as queued runs that nobody can claim). Any worker, whatever it implements, makes this decision.
+        var live = (await WorkerCapacity.LiveJobKeys(db, now.AddSeconds(-options.Value.LeaseSeconds)).ToListAsync(ct)).ToHashSet();
 
         foreach (var s in due)
         {
             defs.TryGetValue(s.JobKey, out var def);
-            var runnable = def is { Enabled: true, IsAvailable: true };
+            var runnable = def is { Enabled: true } && live.Contains(s.JobKey);
             var decision = ScheduleCalculator.Evaluate(
                 s.NextDueUtc, TimeSpan.FromSeconds(s.IntervalSeconds), now,
                 runnable ? def!.MissedRunPolicy : MissedRunPolicy.Skip);
@@ -63,7 +67,7 @@ public sealed class SchedulerService(
             s.NextDueUtc = decision.NextDueUtc;
             if (!runnable)
             {
-                log.LogDebug("Schedule for {Key} advanced without enqueue (disabled/unavailable)", s.JobKey);
+                log.LogDebug("Schedule for {Key} advanced without enqueue (disabled or no live worker implements it)", s.JobKey);
                 continue;
             }
 
@@ -84,46 +88,5 @@ public sealed class SchedulerService(
 
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
-    }
-
-    /// <summary>Running runs with an expired lease belong to a dead/stalled worker: retry or mark Abandoned.</summary>
-    internal async Task RecoverExpiredAsync(CancellationToken ct)
-    {
-        using var scope = scopes.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<MonitoringDbContext>();
-        var now = DateTime.UtcNow;
-
-        var expired = await db.Runs.AsNoTracking()
-            .Where(r => r.Status == RunStatus.Running && r.LeaseExpiresUtc < now)
-            .OrderBy(r => r.LeaseExpiresUtc)
-            .Select(r => new { r.Id, r.Attempt, r.MaxAttempts, r.JobKey })
-            .Take(100).ToListAsync(ct);
-
-        foreach (var r in expired)
-        {
-            var retry = RetryPolicy.CanRetry(r.Attempt, r.MaxAttempts);
-            var status = retry ? RunStatus.Queued : RunStatus.Abandoned;
-            const string error = "Worker lease expired; run recovered";
-
-            // Compare-and-set: only one recoverer wins, and only if the lease is still expired.
-            var rows = await db.Runs
-                .Where(x => x.Id == r.Id && x.Status == RunStatus.Running && x.LeaseExpiresUtc < now)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(x => x.Status, status)
-                    .SetProperty(x => x.WorkerId, (string?)null)
-                    .SetProperty(x => x.LeaseExpiresUtc, (DateTime?)null)
-                    .SetProperty(x => x.NotBeforeUtc, now)
-                    .SetProperty(x => x.EndedUtc, retry ? (DateTime?)null : now)
-                    .SetProperty(x => x.Error, error), ct);
-            if (rows == 0) continue;
-
-            await db.Attempts.Where(a => a.RunId == r.Id && a.Attempt == r.Attempt && a.Status == RunStatus.Running)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(a => a.Status, RunStatus.Abandoned)
-                    .SetProperty(a => a.EndedUtc, now)
-                    .SetProperty(a => a.Error, error), ct);
-
-            log.LogWarning("Recovered run {RunId} of {Key}: {Outcome}", r.Id, r.JobKey, status);
-        }
     }
 }

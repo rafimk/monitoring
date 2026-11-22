@@ -25,7 +25,7 @@ export default function RunDetail() {
         <div><dt>Started</dt><dd><Time iso={run.startedUtc} /></dd></div>
         <div><dt>Ended</dt><dd><Time iso={run.endedUtc} /></dd></div>
         <div><dt>Duration</dt><dd>{formatDuration(run.durationMs)}</dd></div>
-        <div><dt>Attempts</dt><dd>{run.attempt} of {run.maxAttempts}</dd></div>
+        <div><dt>Attempts</dt><dd>{run.attemptsUsed} of {run.maxAttempts} used · {attempts.length} started</dd></div>
         <div><dt>Worker</dt><dd>{run.workerId ?? "—"}</dd></div>
         <div><dt>Correlation ID</dt><dd className="mono">{run.correlationId}</dd></div>
       </dl>

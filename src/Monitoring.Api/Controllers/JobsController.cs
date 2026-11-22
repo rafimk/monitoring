@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Monitoring.Contracts;
 using Monitoring.Infrastructure.Persistence;
 
@@ -10,14 +11,19 @@ namespace Monitoring.Api.Controllers;
 [ApiController]
 [Route("api/v1/jobs")]
 [Authorize(Policy = Policies.Viewer)]
-public class JobsController(MonitoringDbContext db) : ControllerBase
+public class JobsController(MonitoringDbContext db, IOptions<ApiOptions> options) : ControllerBase
 {
     private const int OverdueGraceSeconds = 30;
+
+    /// <summary>Job keys that at least one live worker can execute (a worker is live while its heartbeat is fresh).</summary>
+    private async Task<HashSet<string>> LiveKeysAsync(CancellationToken ct) =>
+        (await WorkerCapacity.LiveJobKeys(db, DateTime.UtcNow.AddSeconds(-options.Value.WorkerStaleSeconds)).ToListAsync(ct)).ToHashSet();
 
     [HttpGet]
     public async Task<IReadOnlyList<JobSummaryDto>> List(CancellationToken ct)
     {
         var now = DateTime.UtcNow;
+        var live = await LiveKeysAsync(ct);
         var defs = await db.Definitions.AsNoTracking().OrderBy(d => d.Key).ToListAsync(ct);
         var schedules = await db.Schedules.AsNoTracking().ToDictionaryAsync(s => s.JobKey, ct);
         var running = await db.Runs.AsNoTracking().Where(r => r.Status == RunStatus.Running)
@@ -28,8 +34,8 @@ public class JobsController(MonitoringDbContext db) : ControllerBase
         {
             schedules.TryGetValue(d.Key, out var s);
             last.TryGetValue(d.Key, out var lr);
-            return new JobSummaryDto(d.Key, d.DisplayName, d.Description, d.Enabled, d.IsAvailable,
-                s?.IntervalSeconds, s?.NextDueUtc, IsOverdue(d, s, now),
+            return new JobSummaryDto(d.Key, d.DisplayName, d.Description, d.Enabled, live.Contains(d.Key),
+                s?.IntervalSeconds, s?.NextDueUtc, IsOverdue(d, live.Contains(d.Key), s, now),
                 running.GetValueOrDefault(d.Key), lr);
         }).ToList();
     }
@@ -45,8 +51,9 @@ public class JobsController(MonitoringDbContext db) : ControllerBase
         var lastSuccess = await db.Runs.Where(r => r.JobKey == key && r.Status == RunStatus.Succeeded)
             .MaxAsync(r => (DateTime?)r.EndedUtc, ct);
 
-        return new JobDetailDto(d.Key, d.DisplayName, d.Description, d.Enabled, d.IsAvailable,
-            s?.IntervalSeconds, s?.NextDueUtc, IsOverdue(d, s, DateTime.UtcNow),
+        var available = (await LiveKeysAsync(ct)).Contains(key);
+        return new JobDetailDto(d.Key, d.DisplayName, d.Description, d.Enabled, available,
+            s?.IntervalSeconds, s?.NextDueUtc, IsOverdue(d, available, s, DateTime.UtcNow),
             d.TimeoutSeconds, d.MaxAttempts, d.RetryBaseDelaySeconds, d.ConcurrencyPolicy, d.MissedRunPolicy, d.TimeZoneId,
             running, last, lastSuccess);
     }
@@ -58,7 +65,7 @@ public class JobsController(MonitoringDbContext db) : ControllerBase
     {
         var d = await db.Definitions.FirstOrDefaultAsync(x => x.Key == key, ct);
         if (d is null) return NotFoundProblem(key);
-        if (!d.IsAvailable) return ConflictProblem("Job has no registered implementation on any worker.");
+        if (!(await LiveKeysAsync(ct)).Contains(key)) return ConflictProblem("No live worker implements this job.");
         if (!d.Enabled) return ConflictProblem("Job is disabled. Enable it before running.");
         if (await db.Runs.AnyAsync(r => r.JobKey == key && r.Trigger == TriggerSource.Manual && r.Status == RunStatus.Queued, ct))
             return ConflictProblem("A manual run for this job is already queued.");
@@ -139,8 +146,8 @@ public class JobsController(MonitoringDbContext db) : ControllerBase
         return rows.GroupBy(x => x.JobKey).ToDictionary(g => g.Key, g => g.First().Dto);
     }
 
-    private static bool IsOverdue(JobDefinition d, JobSchedule? s, DateTime now) =>
-        d.Enabled && d.IsAvailable && s is { Enabled: true } && s.NextDueUtc < now.AddSeconds(-OverdueGraceSeconds);
+    private static bool IsOverdue(JobDefinition d, bool available, JobSchedule? s, DateTime now) =>
+        d.Enabled && available && s is { Enabled: true } && s.NextDueUtc < now.AddSeconds(-OverdueGraceSeconds);
 
     private string Actor => User.Identity?.Name ?? "unknown";
 
